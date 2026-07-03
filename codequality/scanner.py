@@ -15,6 +15,7 @@ def _is_excluded(rel_path, patterns):
 
 
 def discover_files(root, exclude_patterns, include_generic=True):
+    """Walk `root` and return a sorted list of (relative_path, language) for supported files."""
     results = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in DEFAULT_IGNORE_DIRS and not d.endswith(".egg-info")]

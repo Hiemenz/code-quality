@@ -17,6 +17,16 @@ def _normalize(line):
     return _WS_RE.sub(" ", line.strip())
 
 
+def _index_blocks(path, lines, window, min_line_len, seen):
+    """Hash every window-sized slice of `lines` into `seen[block] -> [(path, start_idx), ...]`."""
+    normalized = [_normalize(l) for l in lines]
+    for i in range(len(normalized) - window + 1):
+        block = normalized[i : i + window]
+        if any(len(l) < min_line_len for l in block):
+            continue
+        seen[tuple(block)].append((path, i))
+
+
 def find_duplicate_lines(file_lines, window=6, min_line_len=4):
     """
     file_lines: dict[path] -> list[str] (raw lines, no trailing newline needed)
@@ -24,25 +34,15 @@ def find_duplicate_lines(file_lines, window=6, min_line_len=4):
              duplicated block.
     """
     seen = defaultdict(list)  # normalized-block -> [(path, start_idx), ...]
-    normalized_cache = {}
-
     for path, lines in file_lines.items():
-        normalized = [_normalize(l) for l in lines]
-        normalized_cache[path] = normalized
-        n = len(normalized)
-        if n < window:
-            continue
-        for i in range(n - window + 1):
-            block = normalized[i : i + window]
-            if any(len(l) < min_line_len for l in block):
-                continue
-            seen[tuple(block)].append((path, i))
+        if len(lines) >= window:
+            _index_blocks(path, lines, window, min_line_len, seen)
 
     duplicates = defaultdict(set)
-    for block, locations in seen.items():
-        if len(locations) > 1:
-            for path, i in locations:
-                for k in range(window):
-                    duplicates[path].add(i + k)
+    for locations in seen.values():
+        if len(locations) <= 1:
+            continue
+        for path, i in locations:
+            duplicates[path].update(range(i, i + window))
 
     return duplicates

@@ -179,73 +179,58 @@ def _in_scope(node, only_lines):
     return any(node.lineno <= ln <= end_lineno for ln in only_lines)
 
 
-def _process_function(node, path, limits, fm):
+def _build_function_metrics(node, path):
     end_lineno = getattr(node, "end_lineno", node.lineno)
     cv = _ComplexityVisitor()
     cv.generic_visit(node)
     nv = _NestingVisitor()
     nv.generic_visit(node)
 
-    length = end_lineno - node.lineno + 1
-    has_doc = ast.get_docstring(node) is not None
-    public = is_public_name(node.name)
-
-    fm.functions.append(
-        FunctionMetrics(
-            file=path,
-            name=node.name,
-            lineno=node.lineno,
-            end_lineno=end_lineno,
-            complexity=cv.complexity,
-            length=length,
-            nesting=nv.max_depth,
-            params=_count_params(node),
-            has_docstring=has_doc,
-            is_public=public,
-        )
+    return FunctionMetrics(
+        file=path,
+        name=node.name,
+        lineno=node.lineno,
+        end_lineno=end_lineno,
+        complexity=cv.complexity,
+        length=end_lineno - node.lineno + 1,
+        nesting=nv.max_depth,
+        params=_count_params(node),
+        has_docstring=ast.get_docstring(node) is not None,
+        is_public=is_public_name(node.name),
     )
 
-    if cv.complexity > limits.max_complexity:
-        fm.issues.append(
-            Issue(
-                path,
-                node.lineno,
-                "complexity",
-                "error" if cv.complexity > limits.max_complexity * 2 else "warn",
-                "high-complexity",
-                f"Function '{node.name}' has cyclomatic complexity {cv.complexity} (limit {limits.max_complexity})",
-            )
+
+def _check_function_issues(fn, node, path, limits):
+    issues = []
+    if fn.complexity > limits.max_complexity:
+        severity = "error" if fn.complexity > limits.max_complexity * 2 else "warn"
+        issues.append(
+            Issue(path, fn.lineno, "complexity", severity, "high-complexity",
+                  f"Function '{fn.name}' has cyclomatic complexity {fn.complexity} (limit {limits.max_complexity})")
         )
-    if length > limits.max_function_lines:
-        fm.issues.append(
-            Issue(
-                path,
-                node.lineno,
-                "structure",
-                "warn",
-                "long-function",
-                f"Function '{node.name}' is {length} lines long (limit {limits.max_function_lines})",
-            )
+    if fn.length > limits.max_function_lines:
+        issues.append(
+            Issue(path, fn.lineno, "structure", "warn", "long-function",
+                  f"Function '{fn.name}' is {fn.length} lines long (limit {limits.max_function_lines})")
         )
-    if nv.max_depth > limits.max_nesting:
-        fm.issues.append(
-            Issue(
-                path,
-                node.lineno,
-                "structure",
-                "warn",
-                "deep-nesting",
-                f"Function '{node.name}' nests {nv.max_depth} levels deep (limit {limits.max_nesting})",
-            )
+    if fn.nesting > limits.max_nesting:
+        issues.append(
+            Issue(path, fn.lineno, "structure", "warn", "deep-nesting",
+                  f"Function '{fn.name}' nests {fn.nesting} levels deep (limit {limits.max_nesting})")
         )
-    if public and not has_doc and length > limits.docstring_min_lines:
-        fm.issues.append(
-            Issue(path, node.lineno, "documentation", "info", "missing-docstring", f"Public function '{node.name}' has no docstring")
-        )
+    if fn.is_public and not fn.has_docstring and fn.length > limits.docstring_min_lines:
+        msg = f"Public function '{fn.name}' has no docstring"
+        issues.append(Issue(path, fn.lineno, "documentation", "info", "missing-docstring", msg))
     if _has_mutable_default(node):
-        fm.issues.append(
-            Issue(path, node.lineno, "style", "warn", "mutable-default-arg", f"Function '{node.name}' uses a mutable default argument")
-        )
+        msg = f"Function '{fn.name}' uses a mutable default argument"
+        issues.append(Issue(path, fn.lineno, "style", "warn", "mutable-default-arg", msg))
+    return issues
+
+
+def _process_function(node, path, limits, fm):
+    fn = _build_function_metrics(node, path)
+    fm.functions.append(fn)
+    fm.issues.extend(_check_function_issues(fn, node, path, limits))
 
 
 def _process_other_node(node, path, only_lines, fm):
@@ -297,9 +282,8 @@ def analyze(path, source, limits, only_lines=None):
             _process_other_node(node, path, only_lines, fm)
 
     if total_lines > limits.max_file_lines and only_lines is None:
-        fm.issues.append(
-            Issue(path, 1, "structure", "info", "long-file", f"File is {total_lines} lines long (limit {limits.max_file_lines})")
-        )
+        msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"
+        fm.issues.append(Issue(path, 1, "structure", "info", "long-file", msg))
 
     line_issues, comment_lines = _line_checks(path, lines, limits.max_line_length, only_lines)
     fm.issues.extend(line_issues)

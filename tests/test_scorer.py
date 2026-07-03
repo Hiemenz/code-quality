@@ -24,6 +24,7 @@ class TestScorer(unittest.TestCase):
         self.assertEqual(result.grade, "A")
 
     def test_clean_file_scores_higher_than_messy_file(self):
+        """Sanity check: a tidy file must outscore a messy one under default weights."""
         clean = FileMetrics(path="clean.py", language="python", total_lines=10, loc=10, has_module_docstring=True)
         clean.functions.append(
             FunctionMetrics(
@@ -46,6 +47,7 @@ class TestScorer(unittest.TestCase):
         self.assertGreater(clean_score, messy_score)
 
     def test_weights_are_respected(self):
+        """Zeroing out every category but one should let a defect in the others go unpenalized."""
         cfg = Config({"weights": {"complexity": 100, "structure": 0, "duplication": 0, "documentation": 0, "style": 0}})
         messy_structure_only = FileMetrics(path="a.py", language="python", total_lines=500, loc=500)
         messy_structure_only.functions.append(
@@ -60,9 +62,13 @@ class TestScorer(unittest.TestCase):
         self.assertGreater(result.overall, 95)
 
     def test_deterministic_repeated_runs(self):
+        """Running the same scorer input repeatedly must always yield the same score."""
         fm = FileMetrics(path="a.py", language="python", total_lines=50, loc=50)
         fm.functions.append(
-            FunctionMetrics(file="a.py", name="f", lineno=1, end_lineno=20, complexity=12, length=20, nesting=3, params=2, has_docstring=False)
+            FunctionMetrics(
+                file="a.py", name="f", lineno=1, end_lineno=20, complexity=12,
+                length=20, nesting=3, params=2, has_docstring=False,
+            )
         )
         scores = {compute_scores([fm], _config()).overall for _ in range(10)}
         self.assertEqual(len(scores), 1)

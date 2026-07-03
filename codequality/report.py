@@ -37,6 +37,7 @@ def _worst_files(file_metrics_list, limit=10):
 
 
 def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, fail_under=None, use_color=True):
+    """Assemble the format-agnostic report dict consumed by render_json/text/markdown."""
     issues = _all_issues(file_metrics_list)
     total_functions = sum(len(fm.functions) for fm in file_metrics_list)
     total_loc = sum(fm.loc for fm in file_metrics_list)
@@ -76,6 +77,7 @@ def render_json(summary):
 
 
 def render_text(summary, use_color=True, max_issues=25):
+    """Render `summary` as a colored, human-readable terminal report."""
     def c(name):
         return _COLORS[name] if use_color else ""
 
@@ -88,7 +90,8 @@ def render_text(summary, use_color=True, max_issues=25):
     lines.append(f"Root: {summary['root']}")
     if summary.get("diff"):
         d = summary["diff"]
-        lines.append(f"Diff: {d['base']} -> {d.get('head') or 'working tree'}  ({len(d['changed_files'])} files changed)")
+        head = d.get("head") or "working tree"
+        lines.append(f"Diff: {d['base']} -> {head}  ({len(d['changed_files'])} files changed)")
     lines.append("")
     lines.append(f"{c(grade)}{c('bold')}Overall score: {score}/100  (grade {grade}){c('reset')}")
     lines.append("")
@@ -134,12 +137,14 @@ def render_text(summary, use_color=True, max_issues=25):
 
 
 def render_markdown(summary):
+    """Render `summary` as markdown, suitable for posting as a PR comment."""
     grade = summary["overall"]["grade"]
     score = summary["overall"]["score"]
     lines = [f"## Code Quality Report ({summary['mode']} mode)", ""]
     if summary.get("diff"):
         d = summary["diff"]
-        lines.append(f"Diff: `{d['base']}` -> `{d.get('head') or 'working tree'}` ({len(d['changed_files'])} files changed)")
+        head = d.get("head") or "working tree"
+        lines.append(f"Diff: `{d['base']}` -> `{head}` ({len(d['changed_files'])} files changed)")
         lines.append("")
     lines.append(f"### Overall score: **{score}/100** (grade **{grade}**)")
     lines.append("")
@@ -149,7 +154,10 @@ def render_markdown(summary):
         lines.append(f"| {name} | {cat['score']}/100 | {cat['weight']} |")
     lines.append("")
     s = summary["summary"]
-    lines.append(f"Files analyzed: {s['files_analyzed']} · LOC: {s['loc']} · Functions: {s['functions']} · Issues: {s['issues']}")
+    lines.append(
+        f"Files analyzed: {s['files_analyzed']} · LOC: {s['loc']} · "
+        f"Functions: {s['functions']} · Issues: {s['issues']}"
+    )
 
     if summary["worst_files"]:
         lines.append("")

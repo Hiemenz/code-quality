@@ -18,6 +18,7 @@ def _read(name):
 
 class TestPythonAnalyzer(unittest.TestCase):
     def test_good_file_has_no_serious_issues(self):
+        """A tidy, docstringed module should score clean."""
         fm = python_analyzer.analyze("good.py", _read("good.py"), _limits())
         self.assertIsNone(fm.parse_error)
         severities = {i.severity for i in fm.issues}
@@ -28,6 +29,7 @@ class TestPythonAnalyzer(unittest.TestCase):
             self.assertTrue(fn.has_docstring)
 
     def test_bad_file_flags_expected_issues(self):
+        """Every deliberately planted defect in the bad.py fixture should be caught."""
         fm = python_analyzer.analyze("bad.py", _read("bad.py"), _limits())
         symbols = {i.symbol for i in fm.issues}
         self.assertIn("high-complexity", symbols)
@@ -64,6 +66,7 @@ class TestPythonAnalyzer(unittest.TestCase):
         self.assertEqual(len(set(results)), 1)
 
     def test_nested_function_does_not_inflate_parent_complexity(self):
+        """A closure's branching should count toward its own complexity, not its parent's."""
         source = (
             "def outer():\n"
             "    def inner():\n"

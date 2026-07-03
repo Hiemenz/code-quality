@@ -13,6 +13,7 @@ class Issue:
     message: str
 
     def to_dict(self):
+        """JSON-serializable form of this issue."""
         return {
             "file": self.file,
             "line": self.line,

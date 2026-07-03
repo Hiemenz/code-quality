@@ -21,6 +21,7 @@ def _git(args, cwd):
 
 class TestCliIntegration(unittest.TestCase):
     def setUp(self):
+        """Create a throwaway git repo with one clean, committed file."""
         self.repo = tempfile.mkdtemp(prefix="cq-test-")
         _git(["init", "-q"], self.repo)
         _git(["config", "user.email", "test@example.com"], self.repo)
@@ -53,9 +54,11 @@ class TestCliIntegration(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_diff_scores_only_the_uncommitted_change(self):
+        """A newly added, deeply nested function should be flagged by diff mode."""
         messy_fn = (
             "\n\ndef messy(a, b, c, d, e):\n"
-            "    if a:\n        if b:\n            if c:\n                if d:\n                    if e:\n                        return 1\n"
+            "    if a:\n        if b:\n            if c:\n"
+            "                if d:\n                    if e:\n                        return 1\n"
             "    return 0\n"
         )
         with open(os.path.join(self.repo, "clean.py"), "a") as f:

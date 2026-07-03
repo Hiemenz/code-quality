@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 
 def grade(score):
+    """Map a 0-100 score to a letter grade (A/B/C/D/F)."""
     if score >= 90:
         return "A"
     if score >= 80:
@@ -44,6 +45,7 @@ def score_complexity(functions, limits):
 
 
 def score_structure(functions, file_metrics_list, limits):
+    """Score function length, nesting depth, and file length as one category."""
     penalties = []
     for f in functions:
         p = 0.0
@@ -72,23 +74,27 @@ def score_duplication(file_metrics_list):
     return _clamp(100 - ratio * 100 * 2.5)
 
 
+def _docstring_ratio(items, is_documented):
+    if not items:
+        return 1.0
+    return sum(1 for x in items if is_documented(x)) / len(items)
+
+
 def score_documentation(functions, file_metrics_list):
+    """Score docstring coverage on public functions (75%) and modules (25%)."""
     scored_functions = [f for f in functions if f.is_public and f.length > 0]
-    if scored_functions:
-        documented = sum(1 for f in scored_functions if f.has_docstring)
-        func_score = documented / len(scored_functions) * 100
-    else:
-        func_score = 100.0
+    func_score = _docstring_ratio(scored_functions, lambda f: f.has_docstring) * 100
 
     py_files = [fm for fm in file_metrics_list if fm.language == "python"]
-    if py_files:
-        mod_ratio = sum(1 for fm in py_files if fm.has_module_docstring) / len(py_files)
-        mod_score = mod_ratio * 100
-        return _clamp(func_score * 0.75 + mod_score * 0.25)
-    return _clamp(func_score)
+    if not py_files:
+        return _clamp(func_score)
+
+    mod_score = _docstring_ratio(py_files, lambda fm: fm.has_module_docstring) * 100
+    return _clamp(func_score * 0.75 + mod_score * 0.25)
 
 
 def score_style(file_metrics_list):
+    """Score style/hygiene issues, weighted by severity, per 100 lines of code."""
     weights = {
         "long-line": 1,
         "trailing-whitespace": 1,
@@ -124,6 +130,7 @@ class ScoreResult:
 
 
 def compute_scores(file_metrics_list, config):
+    """Combine all five category scores into a weighted overall ScoreResult."""
     functions = [f for fm in file_metrics_list for f in fm.functions]
 
     raw = {

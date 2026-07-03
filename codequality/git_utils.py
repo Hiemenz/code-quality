@@ -54,37 +54,51 @@ def get_diff_text(base, head, cwd):
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
+class _DiffState:
+    """Mutable cursor threaded through the unified-diff line scan."""
+
+    def __init__(self):
+        self.files = {}
+        self.current_file = None
+        self.current_new_line = None
+
+
+def _handle_file_header(line, state):
+    raw_path = line[4:].strip()
+    if raw_path == "/dev/null":
+        state.current_file = None
+        return
+    state.current_file = raw_path[2:] if raw_path.startswith(("a/", "b/")) else raw_path
+    state.files.setdefault(state.current_file, set())
+
+
+def _handle_hunk_header(line, state):
+    m = _HUNK_RE.match(line)
+    if m:
+        state.current_new_line = int(m.group(1))
+
+
+def _handle_added_line(state):
+    if state.current_file is not None and state.current_new_line is not None:
+        state.files[state.current_file].add(state.current_new_line)
+        state.current_new_line += 1
+
+
 def parse_added_lines(diff_text):
     """Returns dict[path] -> set of 1-based line numbers added/modified in
     the new version of the file (renames/deletes resolve to the new path;
     deleted files are omitted since there is no new-file line to grade).
     """
-    files = {}
-    current_file = None
-    current_new_line = None
-
+    state = _DiffState()
     for line in diff_text.splitlines():
         if line.startswith("+++ "):
-            raw_path = line[4:].strip()
-            if raw_path == "/dev/null":
-                current_file = None
-            else:
-                current_file = raw_path[2:] if raw_path.startswith(("a/", "b/")) else raw_path
-                files.setdefault(current_file, set())
+            _handle_file_header(line, state)
         elif line.startswith("@@"):
-            m = _HUNK_RE.match(line)
-            if m:
-                current_new_line = int(m.group(1))
-        elif line.startswith("+++") or line.startswith("---"):
-            continue
+            _handle_hunk_header(line, state)
         elif line.startswith("+"):
-            if current_file is not None and current_new_line is not None:
-                files[current_file].add(current_new_line)
-                current_new_line += 1
-        elif line.startswith("-"):
-            continue  # removed line: doesn't exist in the new file, doesn't advance new-line counter
-
-    return files
+            _handle_added_line(state)
+        # unrecognized/removed ('-') lines don't affect state
+    return state.files
 
 
 def get_changed_files(base, head, cwd):

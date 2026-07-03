@@ -56,9 +56,8 @@ def _scan_line(path, i, raw, comment_prefix, limits):
 
     issues = []
     if len(stripped) > limits.max_line_length:
-        issues.append(
-            Issue(path, i, "style", "info", "long-line", f"Line is {len(stripped)} characters (limit {limits.max_line_length})")
-        )
+        msg = f"Line is {len(stripped)} characters (limit {limits.max_line_length})"
+        issues.append(Issue(path, i, "style", "info", "long-line", msg))
     if stripped != stripped.rstrip():
         issues.append(Issue(path, i, "style", "info", "trailing-whitespace", "Trailing whitespace"))
     if TODO_RE.search(stripped):
@@ -67,78 +66,89 @@ def _scan_line(path, i, raw, comment_prefix, limits):
     return issues, is_comment, _indent_level(raw), len(DECISION_KEYWORDS.findall(stripped))
 
 
+class _ScanTotals:
+    """Accumulated stats from scanning a file's lines, one pass."""
+
+    def __init__(self):
+        self.issues = []
+        self.decision_hits = 0
+        self.comment_lines = 0
+        self.max_indent_level = 0
+        self.considered_lines = 0
+
+
+def _scan_lines(path, lines, comment_prefix, limits, only_lines):
+    totals = _ScanTotals()
+    for i, raw in enumerate(lines, start=1):
+        in_scope = only_lines is None or i in only_lines
+        is_comment_prefix = raw.rstrip("\n").lstrip().startswith(comment_prefix)
+        if not in_scope:
+            totals.comment_lines += 1 if is_comment_prefix else 0
+            continue
+
+        totals.considered_lines += 1
+        issues, is_comment, indent_level, hits = _scan_line(path, i, raw, comment_prefix, limits)
+        totals.issues.extend(issues)
+        totals.comment_lines += 1 if is_comment else 0
+        totals.max_indent_level = max(totals.max_indent_level, indent_level)
+        totals.decision_hits += hits
+    return totals
+
+
+def _pseudo_function(path, total_lines, limits, totals):
+    """A whole considered file, treated as one unit of complexity/nesting
+    since no real function boundaries are detected for this language.
+    """
+    density_per_100 = totals.decision_hits / max(totals.considered_lines, 1) * 100
+    approx_complexity = 1 + round(density_per_100 / 3)
+    fn = FunctionMetrics(
+        file=path,
+        name="<file>",
+        lineno=1,
+        end_lineno=total_lines,
+        complexity=approx_complexity,
+        length=totals.considered_lines,
+        nesting=min(totals.max_indent_level, 12),
+        params=0,
+        has_docstring=totals.comment_lines > 0,
+        is_public=True,
+    )
+    issue = None
+    if approx_complexity > limits.max_complexity * 2:
+        issue = Issue(
+            path,
+            1,
+            "complexity",
+            "warn",
+            "high-complexity-density",
+            f"High density of branching keywords (~{approx_complexity} approx. complexity) "
+            "for a file without per-function analysis support",
+        )
+    return fn, issue
+
+
 def analyze(path, source, language, limits, only_lines=None):
+    """Heuristic file-level analysis for a non-Python source file."""
     lines = source.splitlines(keepends=True)
     total_lines = len(lines)
     loc = sum(1 for l in lines if l.strip())
     comment_prefix = LINE_COMMENT_PREFIXES.get(language, "//")
 
     fm = FileMetrics(path=path, language=language, total_lines=total_lines, loc=loc)
-
-    decision_hits = 0
-    comment_lines = 0
-    max_indent_level = 0
-    considered_lines = 0
-
-    for i, raw in enumerate(lines, start=1):
-        if only_lines is not None and i not in only_lines:
-            if raw.rstrip("\n").lstrip().startswith(comment_prefix):
-                comment_lines += 1
-            continue
-        considered_lines += 1
-
-        issues, is_comment, indent_level, hits = _scan_line(path, i, raw, comment_prefix, limits)
-        fm.issues.extend(issues)
-        comment_lines += 1 if is_comment else 0
-        max_indent_level = max(max_indent_level, indent_level)
-        decision_hits += hits
+    totals = _scan_lines(path, lines, comment_prefix, limits, only_lines)
+    fm.issues.extend(totals.issues)
 
     if total_lines > limits.max_file_lines and only_lines is None:
-        fm.issues.append(
-            Issue(
-                path,
-                1,
-                "structure",
-                "info",
-                "long-file",
-                f"File is {total_lines} lines long (limit {limits.max_file_lines})",
-            )
-        )
+        msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"
+        fm.issues.append(Issue(path, 1, "structure", "info", "long-file", msg))
 
-    # Treat the whole (considered) file as one unit: no real function
-    # boundaries are detected, so this feeds the complexity/structure
-    # categories as a single pseudo-function rather than claiming
-    # per-function granularity we can't actually back up.
-    if considered_lines > 0:
-        density_per_100 = decision_hits / max(considered_lines, 1) * 100
-        approx_complexity = 1 + round(density_per_100 / 3)
-        fm.functions.append(
-            FunctionMetrics(
-                file=path,
-                name="<file>",
-                lineno=1,
-                end_lineno=total_lines,
-                complexity=approx_complexity,
-                length=considered_lines,
-                nesting=min(max_indent_level, 12),
-                params=0,
-                has_docstring=comment_lines > 0,
-                is_public=True,
-            )
-        )
-        if approx_complexity > limits.max_complexity * 2:
-            fm.issues.append(
-                Issue(
-                    path,
-                    1,
-                    "complexity",
-                    "warn",
-                    "high-complexity-density",
-                    f"High density of branching keywords (~{approx_complexity} approx. complexity) "
-                    "for a file without per-function analysis support",
-                )
-            )
+    if totals.considered_lines > 0:
+        fn, complexity_issue = _pseudo_function(path, total_lines, limits, totals)
+        fm.functions.append(fn)
+        if complexity_issue:
+            fm.issues.append(complexity_issue)
 
-    fm.comment_lines = comment_lines
-    fm.has_module_docstring = comment_lines > 0 and total_lines > 0 and (comment_lines / max(loc, 1)) > 0.03
+    fm.comment_lines = totals.comment_lines
+    comment_ratio = totals.comment_lines / max(loc, 1)
+    fm.has_module_docstring = totals.comment_lines > 0 and total_lines > 0 and comment_ratio > 0.03
     return fm

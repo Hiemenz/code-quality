@@ -22,7 +22,10 @@ def _add_common_args(p):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="codequality", description="Deterministic, programmatic code quality scanner.")
+    """Construct the argparse parser for the `scan` and `diff` subcommands."""
+    parser = argparse.ArgumentParser(
+        prog="codequality", description="Deterministic, programmatic code quality scanner."
+    )
     parser.add_argument("--version", action="version", version=f"codequality {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -64,6 +67,7 @@ def _emit(text, output_path):
 
 
 def cmd_scan(args):
+    """Handle `codequality scan`: full-repo scan, returns the process exit code."""
     root = os.path.abspath(args.path)
     config = _load_config(args, root)
     fail_under = args.fail_under if args.fail_under is not None else config.fail_under
@@ -77,6 +81,7 @@ def cmd_scan(args):
 
 
 def cmd_diff(args):
+    """Handle `codequality diff`: git-diff-scoped scan, returns the process exit code."""
     root = os.path.abspath(args.path)
     config = _load_config(args, root)
     fail_under = args.fail_under if args.fail_under is not None else config.fail_under
@@ -115,6 +120,7 @@ def cmd_diff(args):
 
 
 def main(argv=None):
+    """CLI entrypoint; returns the process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

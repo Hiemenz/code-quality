@@ -1,0 +1,60 @@
+name: Code Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so `codequality diff` can find the merge-base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install codequality
+        run: pip install .
+
+      # Score the whole repo. This is the "overall health" number -- track
+      # it over time, don't necessarily gate on it (legacy code may be messy).
+      - name: Full repo scan
+        run: |
+          codequality scan . --format json --output codequality-full.json
+          codequality scan . --format text
+
+      # Score only what this PR actually changed, against the PR base branch.
+      # This is the number to gate merges on: it holds new/changed code to a
+      # bar without requiring the whole repo to be cleaned up first.
+      - name: Changed-code scan (gate)
+        if: github.event_name == 'pull_request'
+        run: |
+          codequality diff . --base "origin/${{ github.base_ref }}" \
+            --format markdown --output codequality-diff.md --fail-under 70
+          codequality diff . --base "origin/${{ github.base_ref }}" --format json --output codequality-diff.json
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('codequality-diff.md')) return;
+            const body = fs.readFileSync('codequality-diff.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codequality-reports
+          path: codequality-*.json

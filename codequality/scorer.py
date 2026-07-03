@@ -1,0 +1,158 @@
+"""Turns raw metrics (from the analyzers) into 0-100 scores.
+
+Every number here comes from counting things in the AST/text -- there is
+no model call, no subjective judgment. The formulas are deliberately
+simple and documented inline so the score is auditable: given the same
+inputs, this always produces the same output.
+"""
+
+from dataclasses import dataclass
+
+
+def grade(score):
+    if score >= 90:
+        return "A"
+    if score >= 80:
+        return "B"
+    if score >= 70:
+        return "C"
+    if score >= 60:
+        return "D"
+    return "F"
+
+
+def _clamp(x, lo=0.0, hi=100.0):
+    return max(lo, min(hi, x))
+
+
+def _complexity_penalty(cc):
+    if cc <= 5:
+        return 0.0
+    if cc <= 10:
+        return (cc - 5) * 2
+    if cc <= 20:
+        return 10 + (cc - 10) * 4
+    return 50 + (cc - 20) * 6
+
+
+def score_complexity(functions, limits):
+    if not functions:
+        return 100.0
+    penalties = [_complexity_penalty(f.complexity) for f in functions]
+    avg_penalty = sum(penalties) / len(penalties)
+    return _clamp(100 - avg_penalty)
+
+
+def score_structure(functions, file_metrics_list, limits):
+    penalties = []
+    for f in functions:
+        p = 0.0
+        if f.length > limits.max_function_lines:
+            over = f.length - limits.max_function_lines
+            p += min(40.0, over * 0.5)
+        if f.nesting > limits.max_nesting:
+            over = f.nesting - limits.max_nesting
+            p += min(30.0, over * 8)
+        penalties.append(p)
+    for fm in file_metrics_list:
+        if fm.total_lines > limits.max_file_lines:
+            over = fm.total_lines - limits.max_file_lines
+            penalties.append(min(40.0, over * 0.05))
+    if not penalties:
+        return 100.0
+    return _clamp(100 - sum(penalties) / len(penalties))
+
+
+def score_duplication(file_metrics_list):
+    total_lines = sum(fm.total_lines for fm in file_metrics_list)
+    dup_lines = sum(fm.duplicate_lines for fm in file_metrics_list)
+    if total_lines == 0:
+        return 100.0
+    ratio = dup_lines / total_lines
+    return _clamp(100 - ratio * 100 * 2.5)
+
+
+def score_documentation(functions, file_metrics_list):
+    scored_functions = [f for f in functions if f.is_public and f.length > 0]
+    if scored_functions:
+        documented = sum(1 for f in scored_functions if f.has_docstring)
+        func_score = documented / len(scored_functions) * 100
+    else:
+        func_score = 100.0
+
+    py_files = [fm for fm in file_metrics_list if fm.language == "python"]
+    if py_files:
+        mod_ratio = sum(1 for fm in py_files if fm.has_module_docstring) / len(py_files)
+        mod_score = mod_ratio * 100
+        return _clamp(func_score * 0.75 + mod_score * 0.25)
+    return _clamp(func_score)
+
+
+def score_style(file_metrics_list):
+    weights = {
+        "long-line": 1,
+        "trailing-whitespace": 1,
+        "tab-indent": 1,
+        "todo-marker": 0.5,
+        "bare-except": 4,
+        "star-import": 3,
+        "mutable-default-arg": 4,
+    }
+    total_loc = sum(fm.loc for fm in file_metrics_list)
+    if total_loc == 0:
+        return 100.0
+    weighted = 0.0
+    for fm in file_metrics_list:
+        for issue in fm.issues:
+            if issue.category == "style":
+                weighted += weights.get(issue.symbol, 1)
+    density_per_100 = weighted / total_loc * 100
+    return _clamp(100 - density_per_100 * 8)
+
+
+@dataclass
+class CategoryResult:
+    score: float
+    weight: float
+
+
+@dataclass
+class ScoreResult:
+    overall: float
+    grade: str
+    categories: dict  # name -> CategoryResult
+
+
+def compute_scores(file_metrics_list, config):
+    functions = [f for fm in file_metrics_list for f in fm.functions]
+
+    raw = {
+        "complexity": score_complexity(functions, config.limits),
+        "structure": score_structure(functions, file_metrics_list, config.limits),
+        "duplication": score_duplication(file_metrics_list),
+        "documentation": score_documentation(functions, file_metrics_list),
+        "style": score_style(file_metrics_list),
+    }
+
+    weights = config.weights
+    total_weight = sum(weights.values()) or 1
+    overall = sum(raw[name] * weights.get(name, 0) for name in raw) / total_weight
+
+    categories = {name: CategoryResult(score=round(raw[name], 1), weight=weights.get(name, 0)) for name in raw}
+
+    return ScoreResult(overall=round(overall, 1), grade=grade(overall), categories=categories)
+
+
+def score_single_file(file_metrics):
+    """Convenience per-file score, used for the "worst files" report table."""
+
+    class _Cfg:
+        pass
+
+    from codequality.config import DEFAULT_CONFIG, Limits
+
+    cfg = _Cfg()
+    cfg.limits = Limits(DEFAULT_CONFIG["limits"])
+    cfg.weights = DEFAULT_CONFIG["weights"]
+    result = compute_scores([file_metrics], cfg)
+    return result.overall

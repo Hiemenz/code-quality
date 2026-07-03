@@ -76,6 +76,33 @@ class TestCliIntegration(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("No changed files", out)
 
+    def test_sarif_output_has_one_result_per_issue(self):
+        code, out = self._run(["scan", self.repo, "--format", "sarif"])
+        sarif = json.loads(out)
+        run = sarif["runs"][0]
+        self.assertEqual(run["tool"]["driver"]["name"], "codequality")
+        code_json, out_json = self._run(["scan", self.repo, "--format", "json"])
+        data = json.loads(out_json)
+        self.assertEqual(len(run["results"]), len(data["issues"]))
+
+    def test_record_history_then_trend_reports_the_run(self):
+        """--record-history should append a run, and `trend` should read it back."""
+        history_path = os.path.join(self.repo, "history.jsonl")
+        code, _ = self._run(["scan", self.repo, "--record-history", history_path, "--format", "json"])
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isfile(history_path))
+
+        code, out = self._run(["trend", history_path, "--format", "json"])
+        self.assertEqual(code, 0)
+        entries = json.loads(out)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("overall", entries[0])
+        self.assertIn("categories", entries[0])
+
+    def test_trend_on_missing_file_is_a_usage_error(self):
+        code, _ = self._run(["trend", os.path.join(self.repo, "nope.jsonl")])
+        self.assertEqual(code, 2)
+
     def test_json_output_is_deterministic_across_runs(self):
         outputs = set()
         for _ in range(3):

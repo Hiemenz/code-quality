@@ -1,11 +1,13 @@
 import argparse
+import json
 import os
 import sys
 
 from codequality import __version__
 from codequality.config import Config
 from codequality.git_utils import GitError, get_changed_files, is_git_repo, resolve_default_base
-from codequality.report import build_summary, render_json, render_markdown, render_text
+from codequality.history import append_entry, read_entries, render_trend_text
+from codequality.report import build_summary, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import scan_changed, scan_repo
 from codequality.scorer import compute_scores
 
@@ -13,7 +15,7 @@ from codequality.scorer import compute_scores
 def _add_common_args(p):
     p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
     p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
-    p.add_argument("--format", choices=["text", "json", "markdown"], default="text")
+    p.add_argument("--format", choices=["text", "json", "markdown", "sarif"], default="text")
     p.add_argument("--output", "-o", help="Write report to a file instead of stdout")
     p.add_argument("--fail-under", type=float, default=None, help="Exit non-zero if the overall score is below this")
     p.add_argument("--no-color", action="store_true")
@@ -31,11 +33,20 @@ def build_parser():
 
     scan_p = sub.add_parser("scan", help="Score the entire repository")
     _add_common_args(scan_p)
+    scan_p.add_argument(
+        "--record-history", metavar="FILE",
+        help="Append this run's overall/category scores as a JSON line to FILE"
+    )
 
     diff_p = sub.add_parser("diff", help="Score only the code changed relative to a git base")
     _add_common_args(diff_p)
     diff_p.add_argument("--base", default=None, help="Git ref to diff against (default: auto-detect)")
     diff_p.add_argument("--head", default=None, help="Git ref for the 'after' state (default: working tree)")
+
+    trend_p = sub.add_parser("trend", help="Show the score trend recorded by `scan --record-history`")
+    trend_p.add_argument("history_file", help="Path to the JSONL file written by --record-history")
+    trend_p.add_argument("--format", choices=["text", "json"], default="text")
+    trend_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
     return parser
 
@@ -55,6 +66,8 @@ def _render(summary, fmt):
         return render_json(summary)
     if fmt == "markdown":
         return render_markdown(summary)
+    if fmt == "sarif":
+        return render_sarif(summary)
     return render_text(summary, use_color=sys.stdout.isatty())
 
 
@@ -75,6 +88,9 @@ def cmd_scan(args):
     file_metrics = scan_repo(root, config)
     score_result = compute_scores(file_metrics, config)
     summary = build_summary(file_metrics, score_result, "scan", root, fail_under=fail_under)
+
+    if args.record_history:
+        append_entry(args.record_history, summary)
 
     _emit(_render(summary, args.format), args.output)
     return 0 if summary["threshold"]["passed"] else 1
@@ -119,6 +135,17 @@ def cmd_diff(args):
     return 0 if summary["threshold"]["passed"] else 1
 
 
+def cmd_trend(args):
+    """Handle `codequality trend`: render the score history recorded via --record-history."""
+    if not os.path.isfile(args.history_file):
+        print(f"error: history file not found: {args.history_file}", file=sys.stderr)
+        return 2
+    entries = read_entries(args.history_file)
+    text = json.dumps(entries, indent=2) if args.format == "json" else render_trend_text(entries)
+    _emit(text, args.output)
+    return 0
+
+
 def main(argv=None):
     """CLI entrypoint; returns the process exit code."""
     parser = build_parser()
@@ -128,6 +155,8 @@ def main(argv=None):
             return cmd_scan(args)
         if args.command == "diff":
             return cmd_diff(args)
+        if args.command == "trend":
+            return cmd_trend(args)
     except KeyboardInterrupt:
         return 130
     parser.print_help()

@@ -1,8 +1,8 @@
 import unittest
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue
-from codequality.config import DEFAULT_CONFIG, Config
-from codequality.scorer import compute_scores, grade
+from codequality.config import Config
+from codequality.scorer import compute_scores, grade, score_security
 
 
 def _config():
@@ -60,6 +60,20 @@ class TestScorer(unittest.TestCase):
         # All weight is on complexity (which is fine here), so overall should be ~100
         # even though structure alone would score much lower.
         self.assertGreater(result.overall, 95)
+
+    def test_security_issues_lower_the_security_score(self):
+        clean = FileMetrics(path="clean.py", language="python", total_lines=20, loc=20)
+        dirty = FileMetrics(path="dirty.py", language="python", total_lines=20, loc=20)
+        dirty.issues.append(Issue("dirty.py", 1, "security", "error", "hardcoded-secret", "looks like a secret"))
+        self.assertEqual(score_security([clean]), 100.0)
+        self.assertLess(score_security([dirty]), 100.0)
+
+    def test_security_category_is_included_in_overall_score(self):
+        fm = FileMetrics(path="a.py", language="python", total_lines=20, loc=20)
+        fm.issues.append(Issue("a.py", 1, "security", "error", "dangerous-eval", "eval() call"))
+        result = compute_scores([fm], _config())
+        self.assertIn("security", result.categories)
+        self.assertLess(result.categories["security"].score, 100.0)
 
     def test_deterministic_repeated_runs(self):
         """Running the same scorer input repeatedly must always yield the same score."""

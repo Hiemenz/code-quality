@@ -63,11 +63,12 @@ GENERIC_EXTENSIONS = {
 
 DEFAULT_CONFIG = {
     "weights": {
-        "complexity": 30,
-        "structure": 20,
+        "complexity": 25,
+        "structure": 15,
         "duplication": 15,
-        "documentation": 15,
-        "style": 20,
+        "documentation": 10,
+        "style": 15,
+        "security": 20,
     },
     "limits": {
         "max_line_length": 120,

@@ -65,6 +65,66 @@ class TestPythonAnalyzer(unittest.TestCase):
         results = [python_analyzer.analyze("bad.py", source, _limits()).functions[0].complexity for _ in range(5)]
         self.assertEqual(len(set(results)), 1)
 
+    def test_unused_import_is_flagged_but_used_one_is_not(self):
+        source = "import os\nimport sys\n\n\ndef f():\n    return sys.argv\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        unused = [i for i in fm.issues if i.symbol == "unused-import"]
+        self.assertEqual(len(unused), 1)
+        self.assertIn("os", unused[0].message)
+
+    def test_dunder_all_exempts_reexported_import(self):
+        source = "import os\n\n__all__ = ['os']\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unused-import", {i.symbol for i in fm.issues})
+
+    def test_unused_local_variable_is_flagged(self):
+        source = "def f():\n    x = 1\n    y = 2\n    return y\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        unused = [i for i in fm.issues if i.symbol == "unused-variable"]
+        self.assertEqual(len(unused), 1)
+        self.assertIn("x", unused[0].message)
+
+    def test_underscore_prefixed_variable_is_not_flagged_as_unused(self):
+        source = "def f():\n    _ignored = compute()\n    return 1\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unused-variable", {i.symbol for i in fm.issues})
+
+    def test_eval_and_shell_true_are_flagged_as_security_issues(self):
+        """Both eval() and shell=True should surface as security-category issues."""
+        source = (
+            "import subprocess\n\n"
+            "def f(cmd):\n"
+            "    eval(cmd)\n"
+            "    subprocess.run(cmd, shell=True)\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        symbols = {i.symbol for i in fm.issues if i.category == "security"}
+        self.assertIn("dangerous-eval", symbols)
+        self.assertIn("shell-true", symbols)
+
+    def test_hardcoded_secret_is_flagged(self):
+        source = "password = 'hunter2'\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        secrets = [i for i in fm.issues if i.symbol == "hardcoded-secret"]
+        self.assertEqual(len(secrets), 1)
+
+    def test_placeholder_secret_value_is_not_flagged(self):
+        source = "password = 'changeme'\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("hardcoded-secret", {i.symbol for i in fm.issues})
+
+    def test_bad_function_and_class_names_are_flagged(self):
+        source = "def BadName():\n    pass\n\n\nclass lowercase_class:\n    pass\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        symbols = {i.symbol for i in fm.issues}
+        self.assertIn("bad-function-name", symbols)
+        self.assertIn("bad-class-name", symbols)
+
+    def test_visitor_and_unittest_method_names_are_exempt_from_naming_check(self):
+        source = "class T:\n    def setUp(self):\n        pass\n\n    def visit_If(self, node):\n        pass\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("bad-function-name", {i.symbol for i in fm.issues})
+
     def test_nested_function_does_not_inflate_parent_complexity(self):
         """A closure's branching should count toward its own complexity, not its parent's."""
         source = (

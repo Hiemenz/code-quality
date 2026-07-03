@@ -103,6 +103,10 @@ def score_style(file_metrics_list):
         "bare-except": 4,
         "star-import": 3,
         "mutable-default-arg": 4,
+        "unused-import": 2,
+        "unused-variable": 2,
+        "bad-function-name": 1,
+        "bad-class-name": 1,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:
@@ -112,6 +116,28 @@ def score_style(file_metrics_list):
         for issue in fm.issues:
             if issue.category == "style":
                 weighted += weights.get(issue.symbol, 1)
+    density_per_100 = weighted / total_loc * 100
+    return _clamp(100 - density_per_100 * 8)
+
+
+def score_security(file_metrics_list):
+    """Score security-sensitive findings, weighted by severity, per 100 lines of code."""
+    weights = {
+        "dangerous-eval": 15,
+        "shell-true": 15,
+        "hardcoded-secret": 20,
+        "unsafe-deserialization": 10,
+        "unsafe-yaml-load": 8,
+        "shell-exec": 6,
+    }
+    total_loc = sum(fm.loc for fm in file_metrics_list)
+    if total_loc == 0:
+        return 100.0
+    weighted = 0.0
+    for fm in file_metrics_list:
+        for issue in fm.issues:
+            if issue.category == "security":
+                weighted += weights.get(issue.symbol, 10)
     density_per_100 = weighted / total_loc * 100
     return _clamp(100 - density_per_100 * 8)
 
@@ -139,6 +165,7 @@ def compute_scores(file_metrics_list, config):
         "duplication": score_duplication(file_metrics_list),
         "documentation": score_documentation(functions, file_metrics_list),
         "style": score_style(file_metrics_list),
+        "security": score_security(file_metrics_list),
     }
 
     weights = config.weights

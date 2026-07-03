@@ -34,6 +34,28 @@ DECISION_KEYWORDS = re.compile(
     r"\b(if|else if|elif|for|foreach|while|case|catch|except)\b|(&&|\|\||\?)"
 )
 
+_EVAL_RE = re.compile(r"\b(eval|exec)\s*\(")
+_SECRET_ASSIGN_RE = re.compile(
+    r"(?i)\b(pass(word|wd)?|secret|token|api[_-]?key|access[_-]?key)\b\s*[:=]\s*[\"']([^\"'\s]+)[\"']"
+)
+_SECRET_PLACEHOLDER_RE = re.compile(
+    r"^(changeme|xxx+|todo|<.*>|\.\.\.|example|test|dummy|fake|placeholder)$", re.IGNORECASE
+)
+
+
+def _security_line_issues(path, i, stripped):
+    issues = []
+    if _EVAL_RE.search(stripped):
+        issues.append(
+            Issue(path, i, "security", "warn", "dangerous-eval", "Use of eval()/exec() can execute arbitrary code")
+        )
+    m = _SECRET_ASSIGN_RE.search(stripped)
+    if m and not _SECRET_PLACEHOLDER_RE.match(m.group(3)):
+        issues.append(
+            Issue(path, i, "security", "error", "hardcoded-secret", f"'{m.group(1)}' looks like a hardcoded secret")
+        )
+    return issues
+
 
 def _indent_width(line):
     stripped = line.lstrip(" \t")
@@ -62,6 +84,7 @@ def _scan_line(path, i, raw, comment_prefix, limits):
         issues.append(Issue(path, i, "style", "info", "trailing-whitespace", "Trailing whitespace"))
     if TODO_RE.search(stripped):
         issues.append(Issue(path, i, "style", "info", "todo-marker", stripped.strip()[:120]))
+    issues.extend(_security_line_issues(path, i, stripped))
 
     return issues, is_comment, _indent_level(raw), len(DECISION_KEYWORDS.findall(stripped))
 

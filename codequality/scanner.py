@@ -6,7 +6,7 @@ runs duplicate-block detection across the resulting set.
 import fnmatch
 import os
 
-from codequality.analyzers import duplication, generic_analyzer, python_analyzer
+from codequality.analyzers import duplication, generic_analyzer, python_analyzer, treesitter_analyzer
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
 
 
@@ -45,11 +45,17 @@ def _read_source(root, rel_path):
 
 
 def analyze_file(root, rel_path, language, config, only_lines=None):
+    """Dispatch to the right analyzer for `language`: Python's `ast`-based one,
+    tree-sitter if the optional dependency is installed and supports this
+    language, or the line-heuristic fallback otherwise.
+    """
     source = _read_source(root, rel_path)
     if source is None:
         return None
     if language == "python":
         return python_analyzer.analyze(rel_path, source, config.limits, only_lines=only_lines)
+    if treesitter_analyzer.AVAILABLE and language in treesitter_analyzer.LANGUAGES:
+        return treesitter_analyzer.analyze(rel_path, source, language, config.limits, only_lines=only_lines)
     return generic_analyzer.analyze(rel_path, source, language, config.limits, only_lines=only_lines)
 
 

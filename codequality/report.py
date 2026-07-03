@@ -136,6 +136,55 @@ def render_text(summary, use_color=True, max_issues=25):
     return "\n".join(lines)
 
 
+_SARIF_LEVEL = {"error": "error", "warn": "warning", "info": "note"}
+
+
+def _sarif_rule(symbol):
+    return {
+        "id": symbol,
+        "shortDescription": {"text": symbol.replace("-", " ").capitalize()},
+    }
+
+
+def render_sarif(summary):
+    """Render `summary` as SARIF 2.1.0, for GitHub code scanning / other SARIF consumers."""
+    issues = summary["issues"]
+    rules = {i["symbol"]: _sarif_rule(i["symbol"]) for i in issues}
+    results = [
+        {
+            "ruleId": i["symbol"],
+            "level": _SARIF_LEVEL.get(i["severity"], "warning"),
+            "message": {"text": i["message"]},
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": i["file"]},
+                        "region": {"startLine": max(1, i["line"])},
+                    }
+                }
+            ],
+        }
+        for i in issues
+    ]
+    sarif = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "codequality",
+                        "version": summary["version"],
+                        "rules": sorted(rules.values(), key=lambda r: r["id"]),
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+    return json.dumps(sarif, indent=2, sort_keys=False)
+
+
 def render_markdown(summary):
     """Render `summary` as markdown, suitable for posting as a PR comment."""
     grade = summary["overall"]["grade"]

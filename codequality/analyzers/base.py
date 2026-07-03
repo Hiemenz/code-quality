@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 class Issue:
     file: str
     line: int
-    category: str  # complexity | structure | duplication | documentation | style
+    category: str  # complexity | structure | duplication | documentation | style | security
     severity: str  # info | warn | error
     symbol: str
     message: str

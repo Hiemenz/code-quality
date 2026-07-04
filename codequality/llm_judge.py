@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - exercised when the extra isn't install
     anthropic = None
     AVAILABLE = False
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 MODEL_ENV_VAR = "CODEQUALITY_LLM_MODEL"
 ANTHROPIC_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
 

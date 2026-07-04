@@ -159,7 +159,7 @@ codequality pipeline .
 | `--check-coverage` | Run the repo's own test suite under coverage.py (opt-in; executes your code) |
 | `--test-command "..."` | Command to run under `--check-coverage`, as args after `python -m` |
 | `--llm-review` | Ask an LLM to judge architecture/readability/instruction-adherence (opt-in; network call, costs money, not reproducible -- see [Optional: LLM-based review](#optional-llm-based-review-not-part-of-the-deterministic-score)) |
-| `--llm-model MODEL` | Override the model used by `--llm-review` (default: `claude-haiku-4-5`, or `$CODEQUALITY_LLM_MODEL`) |
+| `--llm-model MODEL` | Override the model used by `--llm-review` (default: `claude-haiku-4-5-20251001`, or `$CODEQUALITY_LLM_MODEL`) |
 | `--llm-task "..."` | The task/prompt text the reviewed code was supposed to implement, so `--llm-review` can score instruction adherence (omit to leave that score unset) |
 
 `diff` additionally takes `--base REF` and `--head REF` (default: auto-detect,
@@ -609,7 +609,7 @@ not the whole repository -- this bounds the size and cost of the request
 regardless of repo size, at the cost of not reviewing files the
 deterministic score already considers healthy.
 
-Model choice: the default is `claude-haiku-4-5`, Anthropic's fastest and
+Model choice: the default is `claude-haiku-4-5-20251001`, Anthropic's fastest and
 cheapest current model -- appropriate for a linting-adjacent check that
 might run on every PR. Override it with `--llm-model` or
 `$CODEQUALITY_LLM_MODEL` if you want a more capable (and more expensive)

@@ -2,7 +2,7 @@ import unittest
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue
 from codequality.config import Config
-from codequality.scorer import compute_scores, grade, score_correctness, score_coverage, score_security
+from codequality.scorer import compute_scores, grade, score_correctness, score_coverage, score_security, score_style
 
 
 def _config():
@@ -81,6 +81,22 @@ class TestScorer(unittest.TestCase):
         dirty.issues.append(Issue("dirty.py", 1, "correctness", "error", "unresolved-import", "..."))
         self.assertEqual(score_correctness([clean]), 100.0)
         self.assertLess(score_correctness([dirty]), 100.0)
+
+    def test_correctness_score_penalizes_assertion_free_tests_and_unreachable_code(self):
+        """These two run always-on (no opt-in flag), unlike unresolved-import/type-error."""
+        clean = FileMetrics(path="clean.py", language="python", total_lines=20, loc=20)
+        dirty = FileMetrics(path="dirty.py", language="python", total_lines=20, loc=20)
+        dirty.issues.append(Issue("dirty.py", 1, "correctness", "warn", "assertion-free-test", "..."))
+        dirty.issues.append(Issue("dirty.py", 2, "correctness", "warn", "unreachable-code", "..."))
+        self.assertEqual(score_correctness([clean]), 100.0)
+        self.assertLess(score_correctness([dirty]), 100.0)
+
+    def test_broad_except_swallow_lowers_style_score(self):
+        clean = FileMetrics(path="clean.py", language="python", total_lines=20, loc=20)
+        dirty = FileMetrics(path="dirty.py", language="python", total_lines=20, loc=20)
+        dirty.issues.append(Issue("dirty.py", 1, "style", "warn", "broad-except-swallow", "..."))
+        self.assertEqual(score_style([clean]), 100.0)
+        self.assertLess(score_style([dirty]), 100.0)
 
     def test_coverage_score_is_100_when_never_measured(self):
         """Coverage is opt-in -- absence of a measurement isn't a penalty."""

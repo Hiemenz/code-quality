@@ -171,10 +171,10 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
 | Structure | 10 | Function length, nesting depth, file length |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
-| Documentation | 8 | Docstring coverage on public functions and modules |
-| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
+| Documentation | 8 | Docstring coverage on public functions and modules, plus stale docstrings that document a removed parameter |
+| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
 | Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
-| Correctness | 15 | Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`). 100 until you opt in — see [Correctness checks](#correctness-checks-opt-in) |
+| Correctness | 15 | Always-on: assertion-free tests, unreachable code. Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
 | Coverage | 15 | Opt-in: line coverage from your own test suite (`--check-coverage`). 100 until you opt in — see [Test coverage](#test-coverage-opt-in-executes-your-code) |
 
 The first six categories are pure static analysis — the same "is this code
@@ -191,15 +191,43 @@ function. See `codequality/scorer.py` for the exact formulas; they're
 simple arithmetic on purpose, not a black box.
 
 Python-only checks (no equivalent yet for other languages): unused
-imports/variables, `pickle`/`yaml.load` deserialization checks.
-Hardcoded-secret and `eval`/`exec` detection run for every language via a
-line-level regex. Function-naming convention checks run for Python and,
-when the `tree-sitter` extra is installed, for JS/TS/Java/C#/Go/Ruby/Rust/
-Kotlin/Swift/Scala too — each checked against that language's own
-convention (e.g. `camelCase` for JS/Java, `snake_case` for Ruby/Rust,
-`PascalCase` for C#), with constructors exempted. C, C++, and PHP are
-deliberately skipped here since real-world naming style in those languages
-is too mixed to check without a lot of noise.
+imports/variables, `pickle`/`yaml.load` deserialization checks,
+assertion-free tests, broad exception-swallowing, stale-docstring
+parameters, and unreachable code. Hardcoded-secret and `eval`/`exec`
+detection run for every language via a line-level regex. Function-naming
+convention checks run for Python and, when the `tree-sitter` extra is
+installed, for JS/TS/Java/C#/Go/Ruby/Rust/Kotlin/Swift/Scala too — each
+checked against that language's own convention (e.g. `camelCase` for
+JS/Java, `snake_case` for Ruby/Rust, `PascalCase` for C#), with
+constructors exempted. C, C++, and PHP are deliberately skipped here since
+real-world naming style in those languages is too mixed to check without
+a lot of noise.
+
+Four of the checks above are specifically aimed at judging whether code —
+LLM-written or not — actually does what it claims, rather than just
+looking tidy:
+
+- **`assertion-free-test`** — a `test_*` function with no `assert`,
+  `self.assertX`, or `pytest.raises`/`warns` anywhere in its body passes
+  regardless of what the code under test does. This is the purest form of
+  "test theater" and is distinct from coverage (which only asks "did
+  anything call this") — it's a static, instant check for tests that
+  can't fail even in principle.
+- **`broad-except-swallow`** — `except Exception:` (or `BaseException`)
+  whose body is just `pass` (optionally with a leading string "comment")
+  and nothing else: no re-raise, no logging, no returned error signal.
+  Distinct from the existing bare-`except:` check, and a much more common
+  pattern in practice — code that looks defensive but actually hides every
+  failure with no trace.
+- **`stale-docstring-param`** — a docstring (Sphinx `:param:`, Google
+  `Args:`, or NumPy `Parameters` style) documents a parameter that no
+  longer exists in the actual signature. Deliberately asymmetric: this
+  only flags *removed* parameters, never *undocumented* ones, since the
+  latter would be far noisier for little benefit.
+- **`unreachable-code`** — a statement following an unconditional
+  `return`/`raise`/`continue`/`break` in the same block. Occasionally
+  shows up in LLM output as a leftover branch after code that already
+  unconditionally exits it.
 
 ### Language support
 
@@ -283,13 +311,14 @@ from a snapshot instead of written by hand.
 
 ## Correctness checks (opt-in)
 
-Everything above this section is static analysis: it can tell you code is
-tidy, documented, and free of obvious security footguns, but none of it
-can tell you the code actually *does what it's supposed to do*. An LLM can
+Everything above this section other than `assertion-free-test` and
+`unreachable-code` is static analysis: it can tell you code is tidy,
+documented, and free of obvious security footguns, but none of it can
+tell you the code actually *does what it's supposed to do*. An LLM can
 write low-complexity, well-documented, secure-looking code that's still
-wrong, and every check above would score it well anyway. Two checks close
-part of that gap — both opt-in, because both depend on the environment
-`codequality` runs in, not on the source alone:
+wrong, and most checks above would score it well anyway. Two more checks
+close part of that gap — both opt-in (unlike the two above), because both
+depend on the environment `codequality` runs in, not on the source alone:
 
 ```bash
 codequality scan . --check-imports   # flag imports that don't resolve here

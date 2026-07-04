@@ -144,6 +144,91 @@ class TestPythonAnalyzer(unittest.TestCase):
         fm = python_analyzer.analyze("f.py", "from . import sibling\n", _limits(), check_imports=True)
         self.assertNotIn("unresolved-import", {i.symbol for i in fm.issues})
 
+    def test_assertion_free_test_is_flagged(self):
+        source = "def test_no_assert():\n    add(1, 2)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "assertion-free-test"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].category, "correctness")
+
+    def test_assert_statement_satisfies_the_check(self):
+        source = "def test_it():\n    assert add(1, 2) == 3\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("assertion-free-test", {i.symbol for i in fm.issues})
+
+    def test_self_assert_call_satisfies_the_check(self):
+        source = "def test_it(self):\n    self.assertEqual(add(1, 2), 3)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("assertion-free-test", {i.symbol for i in fm.issues})
+
+    def test_pytest_raises_satisfies_the_check(self):
+        source = "def test_it():\n    with pytest.raises(ValueError):\n        raise ValueError()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("assertion-free-test", {i.symbol for i in fm.issues})
+
+    def test_skipped_test_is_exempt_from_assertion_check(self):
+        source = "@unittest.skip('wip')\ndef test_no_assert():\n    add(1, 2)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("assertion-free-test", {i.symbol for i in fm.issues})
+
+    def test_broad_except_swallow_is_flagged(self):
+        source = "def f():\n    try:\n        risky()\n    except Exception:\n        pass\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("broad-except-swallow", {i.symbol for i in fm.issues})
+
+    def test_except_that_reraises_is_not_flagged(self):
+        source = "def f():\n    try:\n        risky()\n    except Exception:\n        raise\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("broad-except-swallow", {i.symbol for i in fm.issues})
+
+    def test_except_that_logs_is_not_flagged(self):
+        source = "def f():\n    try:\n        risky()\n    except Exception:\n        logging.exception('x')\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("broad-except-swallow", {i.symbol for i in fm.issues})
+
+    def test_narrow_except_pass_is_not_flagged(self):
+        """Catching a specific exception and ignoring it is a normal, deliberate pattern."""
+        source = "def f():\n    try:\n        risky()\n    except ValueError:\n        pass\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("broad-except-swallow", {i.symbol for i in fm.issues})
+
+    def test_stale_docstring_param_is_flagged(self):
+        """A Google-style Args: entry for a removed parameter should be caught."""
+        source = (
+            "def f(a):\n"
+            "    \"\"\"Do a thing.\n\n"
+            "    Args:\n"
+            "        a: first\n"
+            "        removed: no longer a parameter\n"
+            "    \"\"\"\n"
+            "    return a\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "stale-docstring-param"]
+        self.assertEqual(len(issues), 1)
+        self.assertIn("removed", issues[0].message)
+
+    def test_docstring_matching_signature_is_not_flagged(self):
+        source = "def f(a):\n    \"\"\"Do a thing.\n\n    Args:\n        a: first\n    \"\"\"\n    return a\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("stale-docstring-param", {i.symbol for i in fm.issues})
+
+    def test_docstring_without_params_section_is_not_flagged(self):
+        source = "def f(a):\n    \"\"\"Just a summary.\"\"\"\n    return a\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("stale-docstring-param", {i.symbol for i in fm.issues})
+
+    def test_unreachable_code_after_return_is_flagged(self):
+        source = "def f(a):\n    if a:\n        return 1\n        unreachable()\n    return 0\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "unreachable-code"]
+        self.assertEqual(len(issues), 1)
+
+    def test_code_without_early_return_is_not_flagged(self):
+        source = "def f(a):\n    if a:\n        return 1\n    return 0\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unreachable-code", {i.symbol for i in fm.issues})
+
     def test_nested_function_does_not_inflate_parent_complexity(self):
         """A closure's branching should count toward its own complexity, not its parent's."""
         source = (

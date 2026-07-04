@@ -78,65 +78,107 @@ def render_json(summary):
     return json.dumps(summary, indent=2, sort_keys=False)
 
 
+def _render_header_text(summary, c):
+    mode = summary["mode"]
+    lines = [f"{c('bold')}Code Quality Report{c('reset')} ({mode} mode)", f"Root: {summary['root']}"]
+    if summary.get("diff"):
+        d = summary["diff"]
+        head = d.get("head") or "working tree"
+        lines.append(f"Diff: {d['base']} -> {head}  ({len(d['changed_files'])} files changed)")
+    return lines
+
+
+def _render_categories_text(summary, c):
+    lines = ["", f"{c('bold')}Categories{c('reset')}"]
+    for name, cat in summary["categories"].items():
+        bar_len = int(cat["score"] / 5)
+        bar = "#" * bar_len + "-" * (20 - bar_len)
+        lines.append(f"  {name:<14} [{bar}] {cat['score']:>5.1f}/100  (weight {cat['weight']})")
+    return lines
+
+
+def _render_counts_text(summary, c):
+    s = summary["summary"]
+    suppressed_note = f"   Suppressed: {s['suppressed']}" if s["suppressed"] else ""
+    return [
+        "",
+        f"{c('dim')}Files analyzed: {s['files_analyzed']}   LOC: {s['loc']}   "
+        f"Functions: {s['functions']}   Issues: {s['issues']}{suppressed_note}{c('reset')}",
+    ]
+
+
+def _render_worst_files_text(summary, c):
+    if not summary["worst_files"]:
+        return []
+    lines = ["", f"{c('bold')}Lowest-scoring files{c('reset')}"]
+    for wf in summary["worst_files"]:
+        lines.append(f"  {wf['score']:>5.1f}  {wf['path']} ({wf['lines']} lines)")
+    return lines
+
+
+def _render_issues_text(summary, c, max_issues):
+    if not summary["issues"]:
+        return []
+    lines = ["", f"{c('bold')}Issues{c('reset')} (showing up to {max_issues}, sorted by severity)"]
+    for issue in summary["issues"][:max_issues]:
+        sev = issue["severity"].upper()
+        lines.append(f"  [{sev:<5}] {issue['file']}:{issue['line']}  {issue['symbol']} - {issue['message']}")
+    remaining = len(summary["issues"]) - max_issues
+    if remaining > 0:
+        lines.append(f"  ... and {remaining} more (see --format json for the full list)")
+    return lines
+
+
+def _render_threshold_text(summary, c, score):
+    threshold = summary["threshold"]
+    if threshold["fail_under"] is None:
+        return [""]
+    status = "PASS" if threshold["passed"] else "FAIL"
+    color = c("A") if threshold["passed"] else c("F")
+    return [
+        "",
+        f"{color}{c('bold')}{status}{c('reset')} - threshold: fail_under={threshold['fail_under']}, "
+        f"actual={score}",
+    ]
+
+
 def render_text(summary, use_color=True, max_issues=25):
     """Render `summary` as a colored, human-readable terminal report."""
     def c(name):
         return _COLORS[name] if use_color else ""
 
-    lines = []
     grade = summary["overall"]["grade"]
     score = summary["overall"]["score"]
-    mode = summary["mode"]
 
-    lines.append(f"{c('bold')}Code Quality Report{c('reset')} ({mode} mode)")
-    lines.append(f"Root: {summary['root']}")
-    if summary.get("diff"):
-        d = summary["diff"]
-        head = d.get("head") or "working tree"
-        lines.append(f"Diff: {d['base']} -> {head}  ({len(d['changed_files'])} files changed)")
+    lines = _render_header_text(summary, c)
     lines.append("")
     lines.append(f"{c(grade)}{c('bold')}Overall score: {score}/100  (grade {grade}){c('reset')}")
-    lines.append("")
-    lines.append(f"{c('bold')}Categories{c('reset')}")
-    for name, cat in summary["categories"].items():
-        bar_len = int(cat["score"] / 5)
-        bar = "#" * bar_len + "-" * (20 - bar_len)
-        lines.append(f"  {name:<14} [{bar}] {cat['score']:>5.1f}/100  (weight {cat['weight']})")
-    lines.append("")
-    s = summary["summary"]
-    suppressed_note = f"   Suppressed: {s['suppressed']}" if s["suppressed"] else ""
-    lines.append(
-        f"{c('dim')}Files analyzed: {s['files_analyzed']}   LOC: {s['loc']}   "
-        f"Functions: {s['functions']}   Issues: {s['issues']}{suppressed_note}{c('reset')}"
-    )
-
-    if summary["worst_files"]:
+    lines.extend(_render_categories_text(summary, c))
+    lines.extend(_render_counts_text(summary, c))
+    lines.extend(_render_worst_files_text(summary, c))
+    lines.extend(_render_issues_text(summary, c, max_issues))
+    if summary.get("llm_review"):
         lines.append("")
-        lines.append(f"{c('bold')}Lowest-scoring files{c('reset')}")
-        for wf in summary["worst_files"]:
-            lines.append(f"  {wf['score']:>5.1f}  {wf['path']} ({wf['lines']} lines)")
-
-    if summary["issues"]:
-        lines.append("")
-        lines.append(f"{c('bold')}Issues{c('reset')} (showing up to {max_issues}, sorted by severity)")
-        for issue in summary["issues"][:max_issues]:
-            sev = issue["severity"].upper()
-            lines.append(f"  [{sev:<5}] {issue['file']}:{issue['line']}  {issue['symbol']} - {issue['message']}")
-        remaining = len(summary["issues"]) - max_issues
-        if remaining > 0:
-            lines.append(f"  ... and {remaining} more (see --format json for the full list)")
-
-    threshold = summary["threshold"]
-    lines.append("")
-    if threshold["fail_under"] is not None:
-        status = "PASS" if threshold["passed"] else "FAIL"
-        color = c("A") if threshold["passed"] else c("F")
-        lines.append(
-            f"{color}{c('bold')}{status}{c('reset')} - threshold: fail_under={threshold['fail_under']}, "
-            f"actual={score}"
-        )
+        lines.extend(_render_llm_review_text(summary["llm_review"], c))
+    lines.extend(_render_threshold_text(summary, c, score))
 
     return "\n".join(lines)
+
+
+def _format_adherence(review):
+    adherence = review.get("instruction_adherence_score")
+    return f"{adherence}/10" if adherence is not None else "n/a (no task description given)"
+
+
+def _render_llm_review_text(review, c):
+    lines = [f"{c('bold')}LLM Review (opt-in, subjective -- not part of the score){c('reset')}"]
+    lines.append(f"  Model: {review.get('model', '?')}")
+    lines.append(f"  Architecture score:          {review.get('architecture_score')}/10")
+    lines.append(f"  Readability score:           {review.get('readability_score')}/10")
+    lines.append(f"  Instruction adherence score: {_format_adherence(review)}")
+    if review.get("rationale"):
+        lines.append(f"  Rationale: {review['rationale']}")
+    return lines
 
 
 _SARIF_LEVEL = {"error": "error", "warn": "warning", "info": "note"}
@@ -233,6 +275,10 @@ def render_markdown(summary):
         lines.append("")
         lines.append("</details>")
 
+    if summary.get("llm_review"):
+        lines.append("")
+        lines.extend(_render_llm_review_markdown(summary["llm_review"]))
+
     threshold = summary["threshold"]
     if threshold["fail_under"] is not None:
         status = "PASS" if threshold["passed"] else "FAIL"
@@ -240,3 +286,19 @@ def render_markdown(summary):
         lines.append(f"**{status}** — threshold: fail_under={threshold['fail_under']}, actual={score}")
 
     return "\n".join(lines)
+
+
+def _render_llm_review_markdown(review):
+    lines = ["### LLM Review (opt-in, subjective — not part of the score)", ""]
+    lines.append(f"Model: `{review.get('model', '?')}`")
+    lines.append("")
+    lines.append("| Architecture | Readability | Instruction adherence |")
+    lines.append("|---|---|---|")
+    lines.append(
+        f"| {review.get('architecture_score')}/10 | {review.get('readability_score')}/10 "
+        f"| {_format_adherence(review)} |"
+    )
+    if review.get("rationale"):
+        lines.append("")
+        lines.append(f"_{review['rationale']}_")
+    return lines

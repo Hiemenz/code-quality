@@ -152,6 +152,10 @@ codequality scaffold-properties .
 # What broke in the public API between two tags/branches/commits?
 codequality api-diff . --from v1.2 --to v1.3
 
+# Structural consistency checks on requirements.txt/pyproject.toml/package.json
+# -- no network access, ever (see "Dependency consistency check" below)
+codequality dependency-check .
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -181,13 +185,14 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Eleven more subcommands, each documented in its own section below:
+Twelve more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality scaffold-properties`,
-`codequality pipeline`, `codequality complexity-trend`, and
-`codequality api-diff` (public API comparison between any two git refs —
-see [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
+`codequality pipeline`, `codequality complexity-trend`,
+`codequality dependency-check`, and `codequality api-diff` (public API
+comparison between any two git refs — see
+[`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
 Plus `codequality mutation` and `codequality flakiness`, which are
 deliberately separate from everything else — see
 [Mutation testing](#mutation-testing) and
@@ -660,6 +665,55 @@ wired up from type hints for public functions that don't have one yet.
 The assertion itself is left as a `TODO` for a human (or a supervised LLM)
 to fill in; treat the generated imports as a best-effort guess to be
 checked, not a guarantee.
+
+## Dependency consistency check
+
+```bash
+codequality dependency-check .
+codequality dependency-check . --format json
+```
+
+Parses whichever dependency manifests exist at the repo root --
+`requirements*.txt` (including `requirements/*.txt`), `pyproject.toml`'s
+`[project.dependencies]`/`[project.optional-dependencies]` (via `tomllib`,
+same graceful-skip-on-old-Python convention as `.codequality.toml`
+support -- see [Configuration](#configuration)), and `package.json`'s
+`dependencies`/`devDependencies` -- and runs three purely structural
+checks, no network access, ever:
+
+- **`inconsistent-pinning`** -- a manifest where 70%+ of dependencies are
+  pinned to an exact version flags the ones that aren't (and vice versa).
+  The inconsistency itself is the signal, not "unpinned is bad" -- a
+  manifest that's consistently one style or the other never triggers this.
+- **`duplicate-dependency`** -- the same package declared in more than one
+  manifest (e.g. both `requirements.txt` and `requirements-dev.txt`, or
+  `dependencies` and `devDependencies`) with *different* version specs --
+  a real source of "works on my machine" bugs. Declaring it identically in
+  both places, or in only one place, never triggers this.
+- **`unpinned-in-lockfile-repo`** -- if the repo has a lockfile present
+  (`package-lock.json`, `poetry.lock`, `Pipfile.lock`, `uv.lock`, or any
+  `*.lock`), a dependency declared with no version constraint at all is
+  flagged as a lower-confidence, best-effort signal. Lockfile *contents*
+  are never parsed -- only their presence/absence -- so this stays cheap
+  and purely structural.
+
+This is explicitly **not** a vulnerability or staleness scanner: it never
+asks a registry what the latest version is, so it can't tell you a pin is
+old or has a CVE -- doing that would require a network call, which
+contradicts this tool's core "no network access, ever" promise (see the
+top of this README). It only checks whether the manifests as they already
+exist in the repo are internally consistent. Issues are reported with the
+same `Issue` shape as every other check (`file`, `line`, `category`,
+`severity`, `symbol`, `message`), categorized `style` -- see
+`codequality/dependency_check.py`'s module docstring for why `style` over
+`correctness`. Like `churn`/`edit-distance`/`mutation`, this is a
+standalone subcommand, not folded into `scan`'s score.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to check (default `.`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
 
 ## Pipeline: one gate for format, lint, test, and codequality's own scan
 

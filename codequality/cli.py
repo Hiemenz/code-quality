@@ -4,8 +4,8 @@ import os
 import sys
 
 from codequality import (
-    __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, edit_distance,
-    flakiness, hallucination_metrics, mutation, pipeline, property_scaffold,
+    __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
+    edit_distance, flakiness, hallucination_metrics, mutation, pipeline, property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -279,6 +279,17 @@ def _add_hallucination_rate_subparser(sub):
     hall_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_dependency_check_subparser(sub):
+    dep_p = sub.add_parser(
+        "dependency-check",
+        help="Structural consistency checks on requirements.txt/pyproject.toml/package.json (pinning "
+             "consistency, cross-file duplicates, unpinned deps in a lockfile repo) -- offline, no registry calls"
+    )
+    dep_p.add_argument("path", nargs="?", default=".", help="Repo root to check (default: .)")
+    dep_p.add_argument("--format", choices=["text", "json"], default="text")
+    dep_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -300,6 +311,7 @@ def build_parser():
     _add_hallucination_rate_subparser(sub)
     _add_complexity_trend_subparser(sub)
     _add_api_diff_subparser(sub)
+    _add_dependency_check_subparser(sub)
 
     return parser
 
@@ -600,6 +612,22 @@ def cmd_complexity_trend(args):
     return 0
 
 
+def cmd_dependency_check(args):
+    """Handle `codequality dependency-check`: purely structural consistency
+    checks on dependency manifests -- no network access, ever, so this
+    never asks "is there a newer version," only "are these declarations
+    internally consistent." See codequality/dependency_check.py.
+    """
+    root = os.path.abspath(args.path)
+    issues = dependency_check.check(root)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = dependency_check.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_api_diff(args):
     """Handle `codequality api-diff`: public API comparison between two
     arbitrary git refs -- unlike `diff`'s breaking-signature-change check,
@@ -634,6 +662,7 @@ _COMMANDS = {
     "hallucination-rate": cmd_hallucination_rate,
     "complexity-trend": cmd_complexity_trend,
     "api-diff": cmd_api_diff,
+    "dependency-check": cmd_dependency_check,
 }
 
 

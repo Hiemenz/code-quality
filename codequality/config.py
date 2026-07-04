@@ -93,6 +93,13 @@ DEFAULT_CONFIG = {
     "check_types": False,
     "check_coverage": False,
     "test_command": "unittest discover -s tests",
+    # External steps (format/lint/test/benchmark/...) that `codequality
+    # pipeline` runs before folding its own scan in as one more step --
+    # see PipelineStep and codequality/pipeline.py. Empty by default: this
+    # tool never assumes which formatter/linter/benchmark a repo uses.
+    "pipeline": {
+        "steps": [],
+    },
 }
 
 
@@ -101,6 +108,19 @@ class Limits:
 
     def __init__(self, d):
         self.__dict__.update(d)
+
+
+class PipelineStep:
+    """Attribute-style view over one [[pipeline.steps]] config entry.
+
+    `command` is run via `subprocess.run(shlex.split(command), ...)` --
+    never shell=True, so config-file content can't inject shell syntax.
+    """
+
+    def __init__(self, d):
+        self.name = d["name"]
+        self.command = d["command"]
+        self.allow_failure = d.get("allow_failure", False)
 
 
 class Config:
@@ -115,6 +135,7 @@ class Config:
         self.check_types = merged["check_types"]
         self.check_coverage = merged["check_coverage"]
         self.test_command = merged["test_command"]
+        self.pipeline_steps = [PipelineStep(s) for s in merged["pipeline"]["steps"]]
 
     @classmethod
     def load(cls, root, explicit_path=None, overrides=None):

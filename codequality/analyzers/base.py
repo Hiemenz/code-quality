@@ -36,6 +36,7 @@ class FunctionMetrics:
     params: int
     has_docstring: bool
     is_public: bool = True
+    suppressed: frozenset = field(default_factory=frozenset)  # symbols suppressed at this function's line
 
     @property
     def touched(self):
@@ -53,6 +54,7 @@ class FileMetrics:
     has_module_docstring: bool = False
     comment_lines: int = 0
     duplicate_lines: int = 0
+    suppressed_count: int = 0
     parse_error: str = None
 
 

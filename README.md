@@ -68,12 +68,16 @@ Then, in the target repo:
    GitHub Actions? The same two `codequality scan`/`codequality diff`
    commands work in any CI system — see [CI pipeline example](#ci-pipeline-example).
 
-3. **Run it locally once** to see where the repo stands:
+3. **Snapshot a baseline** so gating starts today instead of after a
+   cleanup sprint:
    ```bash
-   codequality scan . --fail-under 0   # no gating, just the report
+   codequality baseline .
+   codequality scan . --baseline .codequality-baseline.json --fail-under 70
    ```
    The `worst_files` list in `--format json` (or the "Lowest-scoring files"
-   table in the terminal report) is your prioritized to-do list.
+   table in the terminal report) is your prioritized to-do list for paying
+   that debt down over time — see
+   [Baseline mode](#baseline-mode-gating-a-messy-repo-without-a-cleanup-sprint).
 
 4. **Track improvement over time** — see [Tracking score history](#tracking-score-history).
 
@@ -101,6 +105,10 @@ codequality scan . --format sarif --output results.sarif
 # Track the score over time, then look at the trend
 codequality scan . --record-history history.jsonl
 codequality trend history.jsonl
+
+# Snapshot current issues, then gate only on issues beyond that snapshot
+codequality baseline .
+codequality scan . --baseline .codequality-baseline.json --fail-under 70
 ```
 
 `scan` and `diff` share the same flags:
@@ -114,6 +122,7 @@ codequality trend history.jsonl
 | `--config PATH` | Explicit config file (see below) |
 | `--exclude PATTERN` | Glob to exclude, repeatable |
 | `--no-generic` | Only analyze Python; skip the analyzer for other languages |
+| `--baseline FILE` | Forgive issues already recorded in this baseline file — see below |
 
 `diff` additionally takes `--base REF` and `--head REF` (default: auto-detect,
 see above).
@@ -121,6 +130,11 @@ see above).
 `scan` additionally takes `--record-history FILE`, which appends this run's
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
+
+There's also a `codequality baseline` subcommand (see
+[Baseline mode](#baseline-mode-gating-a-messy-repo-without-a-cleanup-sprint))
+and a `codequality trend FILE` subcommand (see
+[Tracking score history](#tracking-score-history)).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -143,9 +157,15 @@ function. See `codequality/scorer.py` for the exact formulas; they're
 simple arithmetic on purpose, not a black box.
 
 Python-only checks (no equivalent yet for other languages): unused
-imports/variables, `snake_case`/`PascalCase` naming, `pickle`/`yaml.load`
-deserialization checks. Hardcoded-secret and `eval`/`exec` detection run
-for every language via a line-level regex.
+imports/variables, `pickle`/`yaml.load` deserialization checks.
+Hardcoded-secret and `eval`/`exec` detection run for every language via a
+line-level regex. Function-naming convention checks run for Python and,
+when the `tree-sitter` extra is installed, for JS/TS/Java/C#/Go/Ruby/Rust/
+Kotlin/Swift/Scala too — each checked against that language's own
+convention (e.g. `camelCase` for JS/Java, `snake_case` for Ruby/Rust,
+`PascalCase` for C#), with constructors exempted. C, C++, and PHP are
+deliberately skipped here since real-world naming style in those languages
+is too mixed to check without a lot of noise.
 
 ### Language support
 
@@ -185,6 +205,47 @@ added, then:
 
 So editing one line in a 40-function file scores that one line's context,
 not the other 39 functions you didn't touch.
+
+## Suppressing false positives
+
+Put `codequality: ignore` (optionally scoped to specific rules) anywhere on
+a line to suppress issues reported there:
+
+```python
+eval(trusted_input)  # codequality: ignore[dangerous-eval]
+
+PASSWORD = "not-a-real-secret-this-is-a-fixture"  # codequality: ignore
+```
+
+This isn't tied to any one language's comment syntax — the marker text is
+what matters, not the `#`/`//` in front of it, so it works the same in
+every supported language. Suppression affects the score too, not just the
+printed report: a suppressed `high-complexity`/`long-function`/
+`deep-nesting`/`missing-docstring` stops contributing its penalty, and a
+suppressed style/security issue is simply excluded from those categories'
+issue-density calculation. Suppressed counts show up in the report summary
+(`"suppressed": N` in JSON, a `Suppressed: N` note in text/markdown) so
+they stay visible rather than silently disappearing.
+
+## Baseline mode: gating a messy repo without a cleanup sprint
+
+`codequality baseline` snapshots how many issues of each (file, rule) pair
+currently exist. `scan --baseline FILE` then forgives up to that many —
+only issues *beyond* what was already there count as new, and those are
+what fail the build:
+
+```bash
+codequality baseline .                      # writes .codequality-baseline.json
+codequality scan . --baseline .codequality-baseline.json --fail-under 70
+```
+
+This is the mechanism to reach for when adopting `codequality` on an
+existing codebase: turn on gating immediately without fixing everything
+first, then either delete the baseline once the backlog is paid down, or
+periodically re-run `codequality baseline` to ratchet it as the codebase
+improves. Mechanically it's just a bulk, auto-generated version of the
+inline suppression comments above — same underlying mechanism, generated
+from a snapshot instead of written by hand.
 
 ## Configuration
 

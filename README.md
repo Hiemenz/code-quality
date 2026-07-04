@@ -268,6 +268,27 @@ added, then:
 So editing one line in a 40-function file scores that one line's context,
 not the other 39 functions you didn't touch.
 
+### Diff-only correctness checks
+
+Two checks only make sense with an "old" and a "new" version to compare,
+so they only run in `diff` mode, and both are always-on (no opt-in, no
+extra dependency):
+
+- **`breaking-signature-change`** — compares each changed Python
+  function/method's old and new parameter list and flags removed
+  parameters, newly-required parameters, and reordered positional
+  parameters: the three ways a signature change silently breaks existing
+  callers. Limited to top-level functions and methods of top-level
+  classes — that's what "public API" means for most codebases.
+- **`scope-mismatch`** — tokenizes a task description (`--task-description`,
+  defaulting to the last commit's subject line) and each changed file's
+  path, then flags a changed file that shares no keyword with the
+  description while another changed file elsewhere does. Only fires when
+  the description is specific enough to produce a match at all, and never
+  flags a file that shares a directory with one that did match — a vague
+  subject like `"fix bug"` or a commit that only touches one area never
+  triggers it.
+
 ## Suppressing false positives
 
 Put `codequality: ignore` (optionally scoped to specific rules) anywhere on

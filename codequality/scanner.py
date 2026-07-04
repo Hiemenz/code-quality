@@ -6,8 +6,10 @@ runs duplicate-block detection across the resulting set.
 import fnmatch
 import os
 
-from codequality import coverage_check, suppress, typecheck
-from codequality.analyzers import duplication, generic_analyzer, python_analyzer, treesitter_analyzer
+from codequality import coverage_check, git_utils, suppress, typecheck
+from codequality.analyzers import (
+    duplication, generic_analyzer, python_analyzer, scope_check, signature_diff, treesitter_analyzer,
+)
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
 
 
@@ -124,6 +126,37 @@ def _apply_coverage(root, config, metrics_by_path, changed_files=None):
             fm.coverage_ratio = computed
 
 
+def _apply_signature_diff(root, metrics_by_path, base):
+    """Compare each changed Python file's old (at `base`) vs. new function
+    signatures, flagging breaking API changes. Diff-only, always-on --
+    pure AST comparison, no environment dependency, no opt-in needed.
+    """
+    if base is None:
+        return
+    for rel_path, fm in metrics_by_path.items():
+        if fm.language != "python":
+            continue
+        old_source = git_utils.get_file_at_ref(base, rel_path, root)
+        new_source = _read_source(root, rel_path)
+        if new_source is None:
+            continue
+        fm.issues.extend(signature_diff.signature_diff_issues(old_source, new_source, rel_path))
+
+
+def _apply_scope_check(metrics_by_path, task_description):
+    """Flag changed files that share no keyword with `task_description`
+    while another changed file elsewhere does -- see analyzers/scope_check.py.
+    Diff-only (there's no single "the task" for a whole-repo scan) and
+    always-on like signature-diff: pure string matching, no environment
+    dependency, no opt-in needed.
+    """
+    if not task_description:
+        return
+    issues_by_path = scope_check.scope_mismatch_issues(task_description, metrics_by_path.keys())
+    for rel_path, issues in issues_by_path.items():
+        metrics_by_path[rel_path].issues.extend(issues)
+
+
 def scan_repo(root, config):
     """Full-repo scan: every supported file, in full."""
     files = discover_files(root, config.exclude, config.include_generic_languages)
@@ -141,13 +174,20 @@ def scan_repo(root, config):
     return metrics
 
 
-def scan_changed(root, config, changed_files):
+def scan_changed(root, config, changed_files, base=None, task_description=None):
     """Diff-scoped scan.
 
     `changed_files`: dict[rel_path] -> set of 1-based added line numbers
     (from git_utils.parse_added_lines). Only these files are analyzed,
     and analyzers are told which lines actually changed so complexity/
     structure/style checks grade the changed logic, not the whole file.
+
+    `base`, when given, is the git ref being diffed against -- it's what
+    lets signature-diff (and, opt-in, behavior-diff) fetch each changed
+    file's *old* content to compare against.
+
+    `task_description`, when given, feeds the scope-mismatch check (see
+    analyzers/scope_check.py) -- typically the commit subject.
     """
     all_files = dict(discover_files(root, config.exclude, config.include_generic_languages))
     metrics = []
@@ -164,4 +204,6 @@ def scan_changed(root, config, changed_files):
     _apply_duplication(root, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path, changed_files=changed_files)
     _apply_coverage(root, config, metrics_by_path, changed_files=changed_files)
+    _apply_signature_diff(root, metrics_by_path, base)
+    _apply_scope_check(metrics_by_path, task_description)
     return metrics

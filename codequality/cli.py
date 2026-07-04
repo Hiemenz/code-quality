@@ -6,7 +6,7 @@ import sys
 from codequality import __version__, baseline as baseline_mod, churn, mutation, property_scaffold
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
-from codequality.git_utils import GitError, get_changed_files, is_git_repo, resolve_default_base
+from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
 from codequality.report import build_summary, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import discover_files, scan_changed, scan_repo
@@ -57,6 +57,10 @@ def _add_scan_diff_subparsers(sub):
     _add_common_args(diff_p)
     diff_p.add_argument("--base", default=None, help="Git ref to diff against (default: auto-detect)")
     diff_p.add_argument("--head", default=None, help="Git ref for the 'after' state (default: working tree)")
+    diff_p.add_argument(
+        "--task-description", default=None,
+        help="Description of the intended change, for the scope-mismatch check (default: last commit subject)"
+    )
 
 
 def _add_trend_subparser(sub):
@@ -222,7 +226,8 @@ def cmd_diff(args):
         print(f"No changed files between {base} and {head or 'working tree'}.")
         return 0
 
-    file_metrics = scan_changed(root, config, changed_files)
+    task_description = args.task_description if args.task_description is not None else get_last_commit_subject(root)
+    file_metrics = scan_changed(root, config, changed_files, base=base, task_description=task_description)
     if args.baseline:
         baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
     score_result = compute_scores(file_metrics, config)

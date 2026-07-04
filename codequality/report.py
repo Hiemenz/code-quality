@@ -41,6 +41,7 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
     issues = _all_issues(file_metrics_list)
     total_functions = sum(len(fm.functions) for fm in file_metrics_list)
     total_loc = sum(fm.loc for fm in file_metrics_list)
+    total_suppressed = sum(fm.suppressed_count for fm in file_metrics_list)
     passed = score_result.overall >= fail_under if fail_under is not None else True
 
     return {
@@ -58,6 +59,7 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
             "loc": total_loc,
             "functions": total_functions,
             "issues": len(issues),
+            "suppressed": total_suppressed,
         },
         "worst_files": [{"path": p, "score": s, "lines": n} for p, s, n in _worst_files(file_metrics_list)],
         "issues": [i.to_dict() for i in issues],
@@ -102,9 +104,10 @@ def render_text(summary, use_color=True, max_issues=25):
         lines.append(f"  {name:<14} [{bar}] {cat['score']:>5.1f}/100  (weight {cat['weight']})")
     lines.append("")
     s = summary["summary"]
+    suppressed_note = f"   Suppressed: {s['suppressed']}" if s["suppressed"] else ""
     lines.append(
         f"{c('dim')}Files analyzed: {s['files_analyzed']}   LOC: {s['loc']}   "
-        f"Functions: {s['functions']}   Issues: {s['issues']}{c('reset')}"
+        f"Functions: {s['functions']}   Issues: {s['issues']}{suppressed_note}{c('reset')}"
     )
 
     if summary["worst_files"]:
@@ -203,9 +206,10 @@ def render_markdown(summary):
         lines.append(f"| {name} | {cat['score']}/100 | {cat['weight']} |")
     lines.append("")
     s = summary["summary"]
+    suppressed_note = f" · Suppressed: {s['suppressed']}" if s["suppressed"] else ""
     lines.append(
         f"Files analyzed: {s['files_analyzed']} · LOC: {s['loc']} · "
-        f"Functions: {s['functions']} · Issues: {s['issues']}"
+        f"Functions: {s['functions']} · Issues: {s['issues']}{suppressed_note}"
     )
 
     if summary["worst_files"]:

@@ -3,7 +3,7 @@ import json
 import os
 import sys
 
-from codequality import __version__
+from codequality import __version__, baseline as baseline_mod
 from codequality.config import Config
 from codequality.git_utils import GitError, get_changed_files, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
@@ -21,6 +21,10 @@ def _add_common_args(p):
     p.add_argument("--no-color", action="store_true")
     p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
     p.add_argument("--no-generic", action="store_true", help="Only analyze Python files (skip heuristic analyzers)")
+    p.add_argument(
+        "--baseline", metavar="FILE",
+        help="Forgive issues already recorded in this baseline file (see `codequality baseline`)"
+    )
 
 
 def build_parser():
@@ -47,6 +51,18 @@ def build_parser():
     trend_p.add_argument("history_file", help="Path to the JSONL file written by --record-history")
     trend_p.add_argument("--format", choices=["text", "json"], default="text")
     trend_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+    baseline_p = sub.add_parser(
+        "baseline", help="Snapshot current issues so `--baseline FILE` only fails on new ones"
+    )
+    baseline_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to snapshot (default: .)")
+    baseline_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    baseline_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    baseline_p.add_argument("--no-generic", action="store_true", help="Only analyze Python files")
+    baseline_p.add_argument(
+        "--output", "-o", default=".codequality-baseline.json",
+        help="Baseline file to write (default: .codequality-baseline.json)"
+    )
 
     return parser
 
@@ -86,6 +102,8 @@ def cmd_scan(args):
     fail_under = args.fail_under if args.fail_under is not None else config.fail_under
 
     file_metrics = scan_repo(root, config)
+    if args.baseline:
+        baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
     score_result = compute_scores(file_metrics, config)
     summary = build_summary(file_metrics, score_result, "scan", root, fail_under=fail_under)
 
@@ -122,6 +140,8 @@ def cmd_diff(args):
         return 0
 
     file_metrics = scan_changed(root, config, changed_files)
+    if args.baseline:
+        baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
     score_result = compute_scores(file_metrics, config)
     diff_info = {
         "base": base,
@@ -146,6 +166,17 @@ def cmd_trend(args):
     return 0
 
 
+def cmd_baseline(args):
+    """Handle `codequality baseline`: snapshot current issue counts per (file, symbol)."""
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    file_metrics = scan_repo(root, config)
+    baseline_mod.save(args.output, file_metrics)
+    total_issues = sum(len(fm.issues) for fm in file_metrics)
+    print(f"Wrote baseline with {total_issues} existing issue(s) across {len(file_metrics)} file(s) to {args.output}")
+    return 0
+
+
 def main(argv=None):
     """CLI entrypoint; returns the process exit code."""
     parser = build_parser()
@@ -157,6 +188,8 @@ def main(argv=None):
             return cmd_diff(args)
         if args.command == "trend":
             return cmd_trend(args)
+        if args.command == "baseline":
+            return cmd_baseline(args)
     except KeyboardInterrupt:
         return 130
     parser.print_help()

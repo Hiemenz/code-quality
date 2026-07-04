@@ -76,6 +76,33 @@ class TestCliIntegration(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("No changed files", out)
 
+    def test_baseline_then_gated_scan_only_fails_on_new_debt(self):
+        """A file with pre-existing debt should pass once baselined, and
+        only fail again once genuinely new issues are added.
+        """
+        with open(os.path.join(self.repo, "messy.py"), "w") as f:
+            f.write("import os\n\n\ndef f():\n    return 1\n")
+
+        baseline_path = os.path.join(self.repo, "baseline.json")
+        code, _ = self._run(["baseline", self.repo, "--output", baseline_path])
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isfile(baseline_path))
+
+        code, out = self._run(["scan", self.repo, "--baseline", baseline_path,
+                                "--fail-under", "95", "--format", "json"])
+        data = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertGreater(data["summary"]["suppressed"], 0)
+
+        with open(os.path.join(self.repo, "messy.py"), "a") as f:
+            f.write("\n\ndef g(cmd):\n    eval(cmd)\n")
+
+        code, out = self._run(["scan", self.repo, "--baseline", baseline_path,
+                                "--fail-under", "95", "--format", "json"])
+        data = json.loads(out)
+        symbols = {i["symbol"] for i in data["issues"]}
+        self.assertIn("dangerous-eval", symbols)
+
     def test_sarif_output_has_one_result_per_issue(self):
         code, out = self._run(["scan", self.repo, "--format", "sarif"])
         sarif = json.loads(out)

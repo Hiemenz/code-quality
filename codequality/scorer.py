@@ -8,6 +8,8 @@ inputs, this always produces the same output.
 
 from dataclasses import dataclass
 
+from codequality import suppress
+
 
 def grade(score):
     """Map a 0-100 score to a letter grade (A/B/C/D/F)."""
@@ -37,9 +39,15 @@ def _complexity_penalty(cc):
 
 
 def score_complexity(functions, limits):
+    """Average complexity penalty across functions, skipping any with a
+    suppressed `high-complexity` check.
+    """
     if not functions:
         return 100.0
-    penalties = [_complexity_penalty(f.complexity) for f in functions]
+    penalties = [
+        0.0 if suppress.is_suppressed(f.suppressed, "high-complexity") else _complexity_penalty(f.complexity)
+        for f in functions
+    ]
     avg_penalty = sum(penalties) / len(penalties)
     return _clamp(100 - avg_penalty)
 
@@ -49,10 +57,10 @@ def score_structure(functions, file_metrics_list, limits):
     penalties = []
     for f in functions:
         p = 0.0
-        if f.length > limits.max_function_lines:
+        if f.length > limits.max_function_lines and not suppress.is_suppressed(f.suppressed, "long-function"):
             over = f.length - limits.max_function_lines
             p += min(40.0, over * 0.5)
-        if f.nesting > limits.max_nesting:
+        if f.nesting > limits.max_nesting and not suppress.is_suppressed(f.suppressed, "deep-nesting"):
             over = f.nesting - limits.max_nesting
             p += min(30.0, over * 8)
         penalties.append(p)
@@ -82,8 +90,11 @@ def _docstring_ratio(items, is_documented):
 
 def score_documentation(functions, file_metrics_list):
     """Score docstring coverage on public functions (75%) and modules (25%)."""
+    def _is_documented(f):
+        return f.has_docstring or suppress.is_suppressed(f.suppressed, "missing-docstring")
+
     scored_functions = [f for f in functions if f.is_public and f.length > 0]
-    func_score = _docstring_ratio(scored_functions, lambda f: f.has_docstring) * 100
+    func_score = _docstring_ratio(scored_functions, _is_documented) * 100
 
     py_files = [fm for fm in file_metrics_list if fm.language == "python"]
     if not py_files:

@@ -144,6 +144,46 @@ LANGUAGES = {
 _PARAM_KIND_HINT = "parameter"
 _NAME_LEAF_KINDS = {"identifier", "field_identifier", "simple_identifier", "type_identifier"}
 
+_CAMEL_RE = re.compile(r"^_?[a-z][a-zA-Z0-9]*$")
+_PASCAL_RE = re.compile(r"^_?[A-Z][a-zA-Z0-9]*$")
+_SNAKE_RE = re.compile(r"^_{0,2}[a-z][a-z0-9_]*$")
+_MIXED_CAPS_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9]*$")
+
+_STYLE_LABEL = {"camel": "camelCase", "pascal": "PascalCase", "snake": "snake_case",
+                "mixedcaps": "MixedCaps (no underscores)"}
+
+# Only languages with one well-established, low-ambiguity convention for
+# function/method names -- C, C++, and PHP are deliberately left out since
+# real-world style there is too mixed to check without a lot of noise.
+_NAME_CHECK = {
+    "javascript": ("camel", _CAMEL_RE),
+    "typescript": ("camel", _CAMEL_RE),
+    "java": ("camel", _CAMEL_RE),
+    "csharp": ("pascal", _PASCAL_RE),
+    "go": ("mixedcaps", _MIXED_CAPS_RE),
+    "ruby": ("snake", _SNAKE_RE),
+    "rust": ("snake", _SNAKE_RE),
+    "kotlin": ("camel", _CAMEL_RE),
+    "swift": ("camel", _CAMEL_RE),
+    "scala": ("camel", _CAMEL_RE),
+}
+
+# Constructors are conventionally named after the class (PascalCase), not
+# like an ordinary method -- checking them against the method-naming rule
+# would flag every single constructor.
+_CONSTRUCTOR_KINDS = {"constructor_declaration"}
+
+
+def _naming_issue(fn, node, language, path):
+    check = _NAME_CHECK.get(language)
+    if check is None or node.kind() in _CONSTRUCTOR_KINDS or fn.name == "<anonymous>":
+        return None
+    style, pattern = check
+    if pattern.match(fn.name):
+        return None
+    return Issue(path, fn.lineno, "style", "info", "bad-function-name",
+                 f"Function '{fn.name}' should be {_STYLE_LABEL[style]} ({language} convention)")
+
 _parser_cache = {}
 
 
@@ -255,7 +295,7 @@ def _build_function_metrics(fn_node, cfg, path, source, lines, comment_prefix):
     )
 
 
-def _function_issues(fn, path, limits):
+def _function_issues(fn, node, language, path, limits):
     issues = []
     if fn.complexity > limits.max_complexity:
         severity = "error" if fn.complexity > limits.max_complexity * 2 else "warn"
@@ -273,10 +313,13 @@ def _function_issues(fn, path, limits):
             Issue(path, fn.lineno, "structure", "warn", "deep-nesting",
                   f"Function '{fn.name}' nests {fn.nesting} levels deep (limit {limits.max_nesting})")
         )
+    naming_issue = _naming_issue(fn, node, language, path)
+    if naming_issue is not None:
+        issues.append(naming_issue)
     return issues
 
 
-def _process_functions(root, cfg, path, source, lines, comment_prefix, limits, only_lines, fm):
+def _process_functions(root, cfg, language, path, source, lines, comment_prefix, limits, only_lines, fm):
     for node in _iter_named(root):
         if node.kind() not in cfg["function_kinds"]:
             continue
@@ -286,7 +329,7 @@ def _process_functions(root, cfg, path, source, lines, comment_prefix, limits, o
             continue
         fn = _build_function_metrics(node, cfg, path, source, lines, comment_prefix)
         fm.functions.append(fn)
-        fm.issues.extend(_function_issues(fn, path, limits))
+        fm.issues.extend(_function_issues(fn, node, language, path, limits))
 
 
 def _process_lines(lines, path, comment_prefix, limits, only_lines, fm):
@@ -318,7 +361,7 @@ def analyze(path, source, language, limits, only_lines=None):
     root = tree.root_node()
 
     fm = FileMetrics(path=path, language=language, total_lines=total_lines, loc=loc)
-    _process_functions(root, cfg, path, source, lines, comment_prefix, limits, only_lines, fm)
+    _process_functions(root, cfg, language, path, source, lines, comment_prefix, limits, only_lines, fm)
 
     if total_lines > limits.max_file_lines and only_lines is None:
         msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"

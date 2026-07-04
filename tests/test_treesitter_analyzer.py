@@ -59,6 +59,36 @@ class TestTreesitterAnalyzer(unittest.TestCase):
         self.assertEqual(len(fm_full.functions), 2)
         self.assertEqual(len(fm_scoped.functions), 1)
 
+    def test_bad_function_name_is_flagged_per_language_convention(self):
+        source = "function BadName(a) {\n  return a;\n}\n"
+        fm = treesitter_analyzer.analyze("f.js", source, "javascript", _limits())
+        naming = [i for i in fm.issues if i.symbol == "bad-function-name"]
+        self.assertEqual(len(naming), 1)
+        self.assertIn("camelCase", naming[0].message)
+
+    def test_good_function_name_is_not_flagged(self):
+        source = "function goodName(a) {\n  return a;\n}\n"
+        fm = treesitter_analyzer.analyze("f.js", source, "javascript", _limits())
+        self.assertNotIn("bad-function-name", {i.symbol for i in fm.issues})
+
+    def test_ruby_snake_case_convention_is_enforced(self):
+        source = "def BadName(a)\n  a\nend\n"
+        fm = treesitter_analyzer.analyze("f.rb", source, "ruby", _limits())
+        naming = [i for i in fm.issues if i.symbol == "bad-function-name"]
+        self.assertEqual(len(naming), 1)
+        self.assertIn("snake_case", naming[0].message)
+
+    def test_java_constructor_is_exempt_from_method_naming_rule(self):
+        source = "class Foo {\n    Foo() {}\n    int goodMethod() { return 1; }\n}\n"
+        fm = treesitter_analyzer.analyze("f.java", source, "java", _limits())
+        self.assertNotIn("bad-function-name", {i.symbol for i in fm.issues})
+
+    def test_c_has_no_naming_convention_check(self):
+        """C's style conventions are too mixed in practice to check without noise."""
+        source = "int BadlyNamedFunction(int a) {\n    return a;\n}\n"
+        fm = treesitter_analyzer.analyze("f.c", source, "c", _limits())
+        self.assertNotIn("bad-function-name", {i.symbol for i in fm.issues})
+
     def test_unsupported_construct_kinds_never_crash_unknown_language(self):
         for language, cfg in treesitter_analyzer.LANGUAGES.items():
             self.assertIn("function_kinds", cfg)

@@ -145,6 +145,9 @@ codequality hallucination-rate . --check-imports --check-types
 # Property-based test usage + generated Hypothesis stubs to fill in
 codequality scaffold-properties .
 
+# What broke in the public API between two tags/branches/commits?
+codequality api-diff . --from v1.2 --to v1.3
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -174,12 +177,14 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Nine more subcommands, each documented in its own section below:
+Ten more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality scaffold-properties`,
-`codequality pipeline`, and `codequality complexity-trend`. Plus
-`codequality mutation`, which is deliberately separate from everything
+`codequality pipeline`, `codequality complexity-trend`, and
+`codequality api-diff` (public API comparison between any two git refs —
+see [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
+Plus `codequality mutation`, which is deliberately separate from everything
 else — see [Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
@@ -340,6 +345,54 @@ extra dependency):
   flags a file that shares a directory with one that did match — a vague
   subject like `"fix bug"` or a commit that only touches one area never
   triggers it.
+
+## `codequality api-diff`: public API comparison across any two refs
+
+```bash
+codequality api-diff . --from v1.2 --to v1.3
+codequality api-diff . --from HEAD~20   # --to defaults to HEAD
+codequality api-diff . --from origin/main --format json --output api-diff.json
+```
+
+`diff`'s `breaking-signature-change` check (above) only ever compares the
+working tree (or one `--base`) against the current `diff` invocation, and
+only for files that happen to appear in that one diff — it's folded into a
+single scoring run. `api-diff` is a different tool for a different
+question: "what broke in the public API between any two points in
+history," independent of any single `scan`/`diff` run. Point it at two
+tags, two branches, or two commit shas and it walks *every* Python file
+that existed at either ref (via `git ls-tree`), fetches each file's content
+at both ends, and runs the exact same signature comparison
+(`analyzers/signature_diff.py`) on each pair — still pure `ast` comparison,
+no LLM, no network call, same as everything else in this tool.
+
+Three outcomes per file:
+
+- exists at both refs — compared exactly like `breaking-signature-change`
+  (removed parameters, newly-required parameters, reordered positional
+  parameters).
+- exists only at `--to` (added since `--from`) — nothing to compare
+  against, silently skipped.
+- exists only at `--from` (deleted by `--to`) — flagged as
+  **`removed-public-file`**, one issue per public top-level
+  function/method/class the vanished file used to export (deleting a file
+  deletes its entire public API in one shot, arguably the most breaking
+  change there is), so the report stays at the same "one issue per symbol"
+  granularity as every other check instead of collapsing to one vague "file
+  removed" line.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Git repo root to compare (default `.`) |
+| `--from REF` | Git ref for the "before" state (required) |
+| `--to REF` | Git ref for the "after" state (default `HEAD`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+Exit code: `1` if any issue was found (breaking change or removed file),
+`0` if the API is unchanged between the two refs, `2` on a git/usage error
+(e.g. a ref that doesn't resolve) — so it doubles as a CI gate for
+"did this release break the public API" between two tags.
 
 ## Suppressing false positives
 

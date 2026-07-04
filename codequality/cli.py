@@ -3,7 +3,9 @@ import json
 import os
 import sys
 
-from codequality import __version__, baseline as baseline_mod, churn, edit_distance, mutation, property_scaffold
+from codequality import (
+    __version__, baseline as baseline_mod, churn, edit_distance, mutation, pipeline, property_scaffold,
+)
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
@@ -144,6 +146,28 @@ def _add_mutation_subparser(sub):
     mutation_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_pipeline_subparser(sub):
+    pipeline_p = sub.add_parser(
+        "pipeline",
+        help="Run the repo's own format/lint/test/... commands (from [pipeline] config), plus codequality's "
+             "own scan, as one combined gate"
+    )
+    pipeline_p.add_argument("path", nargs="?", default=".", help="Repo root to run the pipeline in (default: .)")
+    pipeline_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    pipeline_p.add_argument(
+        "--fail-under", type=float, default=None,
+        help="Exit non-zero if codequality's own score is below this, even if every external step passed"
+    )
+    pipeline_p.add_argument("--format", choices=["text", "json"], default="text")
+    pipeline_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+    pipeline_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    pipeline_p.add_argument("--no-generic", action="store_true", help="Only analyze Python files")
+    pipeline_p.add_argument(
+        "--continue-on-failure", action="store_true",
+        help="Run every configured step even after one fails, instead of stopping at the first failure"
+    )
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -159,6 +183,7 @@ def build_parser():
     _add_edit_distance_subparser(sub)
     _add_scaffold_subparser(sub)
     _add_mutation_subparser(sub)
+    _add_pipeline_subparser(sub)
 
     return parser
 
@@ -360,31 +385,53 @@ def cmd_mutation(args):
     return 0
 
 
+def cmd_pipeline(args):
+    """Handle `codequality pipeline`: run the configured external steps
+    (format/lint/test/... -- see the `[pipeline]` config table) in order,
+    then codequality's own scan, as one combined report + exit code.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    fail_under = args.fail_under if args.fail_under is not None else config.fail_under
+
+    try:
+        result = pipeline.run(
+            root, config, fail_under=fail_under, continue_on_failure=args.continue_on_failure
+        )
+    except pipeline.PipelineError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    text = json.dumps(pipeline.to_dict(result), indent=2) if args.format == "json" else pipeline.render_text(result)
+    _emit(text, args.output)
+    return 0 if result.passed else 1
+
+
+_COMMANDS = {
+    "scan": cmd_scan,
+    "diff": cmd_diff,
+    "trend": cmd_trend,
+    "baseline": cmd_baseline,
+    "churn": cmd_churn,
+    "edit-distance": cmd_edit_distance,
+    "scaffold-properties": cmd_scaffold_properties,
+    "mutation": cmd_mutation,
+    "pipeline": cmd_pipeline,
+}
+
+
 def main(argv=None):
     """CLI entrypoint; returns the process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    handler = _COMMANDS.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 2
     try:
-        if args.command == "scan":
-            return cmd_scan(args)
-        if args.command == "diff":
-            return cmd_diff(args)
-        if args.command == "trend":
-            return cmd_trend(args)
-        if args.command == "baseline":
-            return cmd_baseline(args)
-        if args.command == "churn":
-            return cmd_churn(args)
-        if args.command == "edit-distance":
-            return cmd_edit_distance(args)
-        if args.command == "scaffold-properties":
-            return cmd_scaffold_properties(args)
-        if args.command == "mutation":
-            return cmd_mutation(args)
+        return handler(args)
     except KeyboardInterrupt:
         return 130
-    parser.print_help()
-    return 2
 
 
 if __name__ == "__main__":

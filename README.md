@@ -131,6 +131,10 @@ codequality edit-distance .
 
 # Property-based test usage + generated Hypothesis stubs to fill in
 codequality scaffold-properties .
+
+# Full pipeline: your own format/lint/test commands, then codequality's
+# own scan, as one combined report + exit code (see "Pipeline" below)
+codequality pipeline .
 ```
 
 `scan` and `diff` share the same flags:
@@ -157,11 +161,11 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Five more subcommands, each documented in its own section below:
+Six more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
-`codequality edit-distance`, and `codequality scaffold-properties`. Plus
-`codequality mutation`, which is deliberately separate from everything
-else — see [Mutation testing](#mutation-testing).
+`codequality edit-distance`, `codequality scaffold-properties`, and
+`codequality pipeline`. Plus `codequality mutation`, which is deliberately
+separate from everything else — see [Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -461,6 +465,62 @@ The assertion itself is left as a `TODO` for a human (or a supervised LLM)
 to fill in; treat the generated imports as a best-effort guess to be
 checked, not a guarantee.
 
+## Pipeline: one gate for format, lint, test, and codequality's own scan
+
+A full code-quality pipeline usually looks like: format check -> lint ->
+static analysis -> security scan -> unit tests -> coverage -> complexity ->
+benchmark. `codequality scan`/`diff` already cover static analysis,
+security, complexity, and (opt-in) coverage in one deterministic pass.
+Formatting, linting, and benchmarking are deliberately **not**
+reimplemented here — every repo already has its own preferred tool for
+those (`black`/`prettier`/`ruff`/`eslint`/`pytest-benchmark`/...).
+`codequality pipeline` instead orchestrates whatever external commands the
+target repo already uses, runs `codequality`'s own scan alongside them,
+and produces one combined report + exit code for CI to gate on:
+
+```bash
+codequality pipeline .
+codequality pipeline . --fail-under 70 --format json --output pipeline.json
+codequality pipeline . --continue-on-failure   # run every step even after one fails
+```
+
+Configure steps in `.codequality.toml` (or the JSON/pyproject equivalent):
+
+```toml
+[[pipeline.steps]]
+name = "format-check"
+command = "black --check ."
+
+[[pipeline.steps]]
+name = "lint"
+command = "ruff check ."
+
+[[pipeline.steps]]
+name = "test"
+command = "pytest -q"
+allow_failure = false   # default; set true to record a step without gating on it
+```
+
+Each step's `command` is split with `shlex.split()` and run directly
+(never through a shell), so config-file content can't inject shell syntax
+— the same reasoning behind this tool's own `dangerous-shell-true`
+security check. Steps run in order and the pipeline stops at the first
+failing step (skipping the rest) unless that step has `allow_failure =
+true`, or `--continue-on-failure` is passed. Either way, `codequality`'s
+own scan runs as the final step and folds its pass/fail
+(`score >= fail_under`) into the same report — the whole pipeline only
+exits `0` if every step passed (or was `allow_failure`) and the
+codequality score cleared the threshold.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to run the pipeline in (default `.`) |
+| `--config PATH` | Explicit config file |
+| `--fail-under N` | Threshold for codequality's own scan step |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+| `--continue-on-failure` | Run every step even after one fails |
+
 ## Configuration
 
 Optional `.codequality.toml` (or `.codequality.json`, or a
@@ -497,6 +557,17 @@ check_imports = false
 check_types = false
 check_coverage = false
 test_command = "unittest discover -s tests"
+
+# External steps for `codequality pipeline` -- see "Pipeline" above.
+# Empty by default: this tool never assumes which formatter/linter/
+# benchmark a repo uses.
+[[pipeline.steps]]
+name = "format-check"
+command = "black --check ."
+
+[[pipeline.steps]]
+name = "lint"
+command = "ruff check ."
 ```
 
 All fields are optional and merge over the built-in defaults.

@@ -61,3 +61,25 @@ jobs:
         with:
           name: codequality-reports
           path: codequality-*.json
+
+      # Example only (not wired into this job): a repo that also wants to
+      # gate on its own formatter/linter/tests alongside codequality's scan
+      # can replace the two steps above with a single `codequality pipeline`
+      # call driven by a `[pipeline]` table in .codequality.toml, e.g.:
+      #
+      #   [[pipeline.steps]]
+      #   name = "format-check"
+      #   command = "black --check ."
+      #
+      #   [[pipeline.steps]]
+      #   name = "lint"
+      #   command = "ruff check ."
+      #
+      #   [[pipeline.steps]]
+      #   name = "test"
+      #   command = "pytest -q"
+      #
+      # - name: Full pipeline (format -> lint -> test -> codequality scan)
+      #   run: codequality pipeline . --fail-under 70 --format json --output pipeline.json
+      #
+      # See "Pipeline" in README.md for the full flag/config reference.

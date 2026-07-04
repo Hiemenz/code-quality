@@ -134,6 +134,10 @@ codequality churn .
 # Of the lines a commit added, how many are unchanged at HEAD vs. rewritten?
 codequality edit-distance .
 
+# Do commit subject lines meet basic quality bars (length, not a generic
+# placeholder like "fix" / "wip"), broken down AI-assisted vs. human?
+codequality commit-lint .
+
 # Of the hallucination-style findings above, how many trace back (via git
 # blame) to AI-assisted vs. human commits, per 1,000 lines?
 codequality hallucination-rate . --check-imports --check-types
@@ -170,13 +174,13 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Eight more subcommands, each documented in its own section below:
+Nine more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
-`codequality edit-distance`, `codequality hallucination-rate`,
-`codequality scaffold-properties`, `codequality pipeline`, and
-`codequality complexity-trend`. Plus `codequality mutation`, which is
-deliberately separate from everything else — see
-[Mutation testing](#mutation-testing).
+`codequality edit-distance`, `codequality commit-lint`,
+`codequality hallucination-rate`, `codequality scaffold-properties`,
+`codequality pipeline`, and `codequality complexity-trend`. Plus
+`codequality mutation`, which is deliberately separate from everything
+else — see [Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -456,6 +460,43 @@ changing before/after a change lands," adapted to a single git history
 instead of needing a PR review API. Same marker/`--since` conventions as
 `churn`; commits that only delete lines are skipped since the ratio is
 undefined for them.
+
+## Commit message quality
+
+```bash
+codequality commit-lint .
+codequality commit-lint . --strict --since "3 months ago"
+```
+
+`churn` and `edit-distance` look at what happened to the *code* a commit
+touched; `commit-lint` looks at the commit *message* itself, walking the
+same non-merge commit log and classifying AI-assisted vs. human by the
+same marker convention (default `"Co-Authored-By: Claude"`). Each subject
+line is run through a fixed set of structural/lexical rules — never
+anything requiring understanding what the commit actually means, since
+that would need an LLM, which this tool never calls:
+
+- **`too-short`** (on by default) — subject line under a configurable
+  minimum length (default 10 characters).
+- **`generic-subject`** (on by default) — subject, case-insensitively and
+  stripped of trailing punctuation, is *exactly* one of a banned list of
+  placeholders: `fix`, `wip`, `stuff`, `update`, `updates`, `misc`,
+  `changes`, `fixes`, `asdf`, `test`, `tmp`, `more changes`, `fix bug`,
+  `bug fix`. Deliberately an exact match only, so a real descriptive
+  subject like "Fix the null pointer in auth" is never flagged just for
+  starting with "fix".
+- **`trailing-period`** (opt-in via `--strict`) — subject ends with a
+  period.
+- **`not-capitalized`** (opt-in via `--strict`) — subject doesn't start
+  with an uppercase letter.
+
+The first two are on unconditionally since they catch messages that are
+almost never intentional; the `--strict` pair is more a house-style
+opinion than a quality signal, so it's off unless asked for. The report
+shows, per group, how many commits failed at least one rule, a breakdown
+by rule name, and a capped list of the actual failing commits (short sha +
+subject + which rules failed) — same "cap the list, keep the true total"
+convention as the issue listing in `scan`/`diff`.
 
 ## Hallucination rate
 

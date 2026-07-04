@@ -4,8 +4,8 @@ import os
 import sys
 
 from codequality import (
-    __version__, baseline as baseline_mod, churn, edit_distance, hallucination_metrics, mutation, pipeline,
-    property_scaffold,
+    __version__, baseline as baseline_mod, churn, complexity_trend, edit_distance, hallucination_metrics, mutation,
+    pipeline, property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -169,6 +169,36 @@ def _add_pipeline_subparser(sub):
     )
 
 
+def _add_complexity_trend_subparser(sub):
+    ct_p = sub.add_parser(
+        "complexity-trend",
+        help="Track per-function cyclomatic complexity across repeated runs (own snapshot file, "
+             "separate from `scan --record-history`/`trend`)"
+    )
+    ct_sub = ct_p.add_subparsers(dest="ct_mode", required=True)
+
+    snap_p = ct_sub.add_parser(
+        "snapshot", help="Append a snapshot of every function's current complexity to a JSONL file"
+    )
+    snap_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to scan (default: .)")
+    snap_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    snap_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    snap_p.add_argument("--no-generic", action="store_true", help="Only analyze Python files")
+    snap_p.add_argument(
+        "--output", "-o", required=True, metavar="FILE",
+        help="Snapshot JSONL file to append this run's snapshot to (created if missing)"
+    )
+
+    show_p = ct_sub.add_parser(
+        "show",
+        help="Report which functions have gotten more complex between the earliest and most recent snapshot"
+    )
+    show_p.add_argument("snapshot_file", help="Path to the JSONL file written by `complexity-trend snapshot`")
+    show_p.add_argument("--top", type=int, default=25, help="Max number of functions to report (default: 25)")
+    show_p.add_argument("--format", choices=["text", "json"], default="text")
+    show_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_hallucination_rate_subparser(sub):
     hall_p = sub.add_parser(
         "hallucination-rate",
@@ -210,6 +240,7 @@ def build_parser():
     _add_mutation_subparser(sub)
     _add_pipeline_subparser(sub)
     _add_hallucination_rate_subparser(sub)
+    _add_complexity_trend_subparser(sub)
 
     return parser
 
@@ -455,6 +486,30 @@ def cmd_hallucination_rate(args):
     return 0
 
 
+def cmd_complexity_trend(args):
+    """Handle `codequality complexity-trend`: `snapshot` appends one run's
+    per-function complexity to a JSONL file; `show` reports the biggest
+    complexity increases between the earliest and most recent snapshot.
+    """
+    if args.ct_mode == "snapshot":
+        root = os.path.abspath(args.path)
+        config = _load_config(args, root)
+        entry = complexity_trend.snapshot(root, config)
+        complexity_trend.append_snapshot(args.output, entry)
+        commit = entry["commit"] or "unknown"
+        print(f"Wrote snapshot of {len(entry['functions'])} function(s) at commit {commit} to {args.output}")
+        return 0
+
+    if not os.path.isfile(args.snapshot_file):
+        print(f"error: snapshot file not found: {args.snapshot_file}", file=sys.stderr)
+        return 2
+    snapshots = complexity_trend.read_snapshots(args.snapshot_file)
+    rows = complexity_trend.diff_report(snapshots, top_n=args.top)
+    text = json.dumps(rows, indent=2) if args.format == "json" else complexity_trend.render_text(rows)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -466,6 +521,7 @@ _COMMANDS = {
     "mutation": cmd_mutation,
     "pipeline": cmd_pipeline,
     "hallucination-rate": cmd_hallucination_rate,
+    "complexity-trend": cmd_complexity_trend,
 }
 
 

@@ -8,19 +8,13 @@ and formatting are not visible in the AST.
 """
 
 import ast
+import importlib.util
 import re
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
+from codequality.analyzers.python_security import security_issues
 
 TODO_RE = re.compile(r"#\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
-
-_SECRET_NAME_RE = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|access[_-]?key)", re.IGNORECASE)
-_SECRET_PLACEHOLDER_RE = re.compile(
-    r"^(|changeme|xxx+|todo|<.*>|\.\.\.|example|test|dummy|fake|placeholder)$", re.IGNORECASE
-)
-
-_SHELL_CALLS = {"subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_call",
-                "subprocess.check_output"}
 
 _SNAKE_CASE_RE = re.compile(r"^(__[a-z][a-z0-9_]*__|_{0,2}[a-z][a-z0-9_]*)$")
 _PASCAL_CASE_RE = re.compile(r"^_?[A-Z][a-zA-Z0-9]*$")
@@ -235,93 +229,52 @@ def _unused_import_issues(tree, path, only_lines):
     return issues
 
 
-def _call_full_name(node):
-    """Best-effort dotted name for a Call's callee, e.g. 'os.system' or 'eval'."""
-    func = node.func
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        parts = []
-        cur = func
-        while isinstance(cur, ast.Attribute):
-            parts.append(cur.attr)
-            cur = cur.value
-        if isinstance(cur, ast.Name):
-            parts.append(cur.id)
-            return ".".join(reversed(parts))
-    return None
+_import_resolution_cache = {}
 
 
-# Dangerous calls whose mere presence is the issue -- symbol, severity, message.
-_DANGEROUS_CALLS = {
-    "eval": ("dangerous-eval", "error", "Use of 'eval()' can execute arbitrary code"),
-    "exec": ("dangerous-eval", "error", "Use of 'exec()' can execute arbitrary code"),
-    "os.system": ("shell-exec", "warn", "os.system() runs a shell command; prefer subprocess with a list of args"),
-    "pickle.load": ("unsafe-deserialization", "warn",
-                     "pickle.load() can execute arbitrary code from untrusted input"),
-    "pickle.loads": ("unsafe-deserialization", "warn",
-                      "pickle.loads() can execute arbitrary code from untrusted input"),
-}
+def _top_level_resolves(name):
+    """Whether the top-level package `name` can be located in the
+    environment codequality itself is running in. Uses `find_spec`, which
+    locates but does not execute the module -- safe to call even on a
+    name that turns out not to exist.
+    """
+    if name not in _import_resolution_cache:
+        try:
+            _import_resolution_cache[name] = importlib.util.find_spec(name) is not None
+        except Exception:
+            # An unusual/broken finder raised instead of returning None --
+            # don't crash the scan, and don't penalize the code for it.
+            _import_resolution_cache[name] = True
+    return _import_resolution_cache[name]
 
 
-def _shell_true_issue(node, path, name):
-    for kw in node.keywords:
-        if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
-            return Issue(path, node.lineno, "security", "error", "shell-true", f"{name}() called with shell=True")
-    return None
-
-
-def _unsafe_yaml_issue(node, path):
-    loader_kw = next((kw for kw in node.keywords if kw.arg == "Loader"), None)
-    safe = loader_kw is not None and isinstance(loader_kw.value, ast.Attribute) and loader_kw.value.attr == "SafeLoader"
-    if safe:
-        return None
-    return Issue(path, node.lineno, "security", "warn", "unsafe-yaml-load",
-                 "yaml.load() without Loader=yaml.SafeLoader can execute arbitrary code")
-
-
-def _security_call_issue(node, path):
-    name = _call_full_name(node)
-    if name is None:
-        return None
-    if name in _DANGEROUS_CALLS:
-        symbol, severity, message = _DANGEROUS_CALLS[name]
-        return Issue(path, node.lineno, "security", severity, symbol, message)
-    if name in _SHELL_CALLS:
-        return _shell_true_issue(node, path, name)
-    if name == "yaml.load":
-        return _unsafe_yaml_issue(node, path)
-    return None
-
-
-def _hardcoded_secret_issue(node, path):
-    if not (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
-        return None
-    name = node.targets[0].id
-    if not _SECRET_NAME_RE.search(name):
-        return None
-    if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
-        return None
-    if _SECRET_PLACEHOLDER_RE.match(node.value.value.strip()):
-        return None
-    return Issue(path, node.lineno, "security", "error", "hardcoded-secret",
-                 f"'{name}' looks like a hardcoded secret")
-
-
-def _security_issues(tree, path, only_lines):
+def _unresolved_import_issues(tree, path, only_lines):
+    """Flag imports that don't resolve to any installed module -- catches
+    both typos and a well-documented LLM failure mode (inventing a
+    plausible-sounding package that doesn't exist). Opt-in (--check-imports)
+    because the result depends on what's installed in *this* environment,
+    not on the source alone -- see README.
+    """
     issues = []
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            candidates = [(a.name.split(".")[0], a.name) for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0 or node.module is None:
+                continue  # relative import; nothing top-level to resolve
+            candidates = [(node.module.split(".")[0], node.module)]
+        else:
+            continue
         if not _in_scope(node, only_lines):
             continue
-        if isinstance(node, ast.Call):
-            issue = _security_call_issue(node, path)
-        elif isinstance(node, ast.Assign):
-            issue = _hardcoded_secret_issue(node, path)
-        else:
-            issue = None
-        if issue is not None:
-            issues.append(issue)
+        for top_level, full_name in candidates:
+            if not _top_level_resolves(top_level):
+                issues.append(
+                    Issue(path, node.lineno, "correctness", "error", "unresolved-import",
+                          f"'{full_name}' does not resolve to an installed module in this environment")
+                )
     return issues
+
 
 
 def _count_params(node):
@@ -493,13 +446,41 @@ def _process_other_node(node, path, only_lines, fm):
             fm.issues.append(issue)
 
 
-def analyze(path, source, limits, only_lines=None):
+def _syntax_error_result(path, error, total_lines, loc):
+    fm = FileMetrics(path=path, language="python", total_lines=total_lines, loc=loc)
+    fm.parse_error = f"SyntaxError: {error.msg} (line {error.lineno})"
+    fm.issues.append(
+        Issue(path, error.lineno or 1, "style", "error", "syntax-error", f"File does not parse: {error.msg}")
+    )
+    return fm
+
+
+def _walk_tree(tree, path, limits, only_lines, fm):
+    for node in ast.walk(tree):
+        if isinstance(node, _FUNC_TYPES):
+            if _in_scope(node, only_lines):
+                _process_function(node, path, limits, fm, only_lines)
+        else:
+            _process_other_node(node, path, only_lines, fm)
+
+
+def _module_level_issues(tree, path, only_lines, check_imports):
+    issues = _unused_import_issues(tree, path, only_lines) + security_issues(tree, path, only_lines)
+    if check_imports:
+        issues += _unresolved_import_issues(tree, path, only_lines)
+    return issues
+
+
+def analyze(path, source, limits, only_lines=None, check_imports=False):
     """Analyze a single Python file.
 
     `only_lines`, when provided, restricts function selection to functions
     that overlap those (1-based, new-file) line numbers, and restricts
     line-level checks to those lines -- this is how diff mode scores only
     the code that actually changed instead of re-grading the whole file.
+
+    `check_imports`, when True, additionally flags imports that don't
+    resolve in the current environment (see `_unresolved_import_issues`).
     """
     lines = source.splitlines(keepends=True)
     total_lines = len(lines)
@@ -508,12 +489,7 @@ def analyze(path, source, limits, only_lines=None):
     try:
         tree = ast.parse(source, filename=path)
     except SyntaxError as e:
-        fm = FileMetrics(path=path, language="python", total_lines=total_lines, loc=loc)
-        fm.parse_error = f"SyntaxError: {e.msg} (line {e.lineno})"
-        fm.issues.append(
-            Issue(path, e.lineno or 1, "style", "error", "syntax-error", f"File does not parse: {e.msg}")
-        )
-        return fm
+        return _syntax_error_result(path, e, total_lines, loc)
 
     fm = FileMetrics(
         path=path,
@@ -523,15 +499,8 @@ def analyze(path, source, limits, only_lines=None):
         has_module_docstring=bool(ast.get_docstring(tree)),
     )
 
-    for node in ast.walk(tree):
-        if isinstance(node, _FUNC_TYPES):
-            if _in_scope(node, only_lines):
-                _process_function(node, path, limits, fm, only_lines)
-        else:
-            _process_other_node(node, path, only_lines, fm)
-
-    fm.issues.extend(_unused_import_issues(tree, path, only_lines))
-    fm.issues.extend(_security_issues(tree, path, only_lines))
+    _walk_tree(tree, path, limits, only_lines, fm)
+    fm.issues.extend(_module_level_issues(tree, path, only_lines, check_imports))
 
     if total_lines > limits.max_file_lines and only_lines is None:
         msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"

@@ -153,6 +153,41 @@ def score_security(file_metrics_list):
     return _clamp(100 - density_per_100 * 8)
 
 
+def score_correctness(file_metrics_list):
+    """Score issues that suggest the code may not actually work -- as
+    opposed to being merely unpolished or insecure -- weighted by
+    severity, per 100 lines of code. Only populated when the opt-in
+    --check-imports/--check-types passes have run; otherwise 100.
+    """
+    weights = {
+        "unresolved-import": 20,
+        "type-error": 12,
+    }
+    total_loc = sum(fm.loc for fm in file_metrics_list)
+    if total_loc == 0:
+        return 100.0
+    weighted = 0.0
+    for fm in file_metrics_list:
+        for issue in fm.issues:
+            if issue.category == "correctness":
+                weighted += weights.get(issue.symbol, 12)
+    density_per_100 = weighted / total_loc * 100
+    return _clamp(100 - density_per_100 * 8)
+
+
+def score_coverage(file_metrics_list):
+    """Average line-coverage ratio across files where coverage was
+    actually measured -- files without a measurement (the common case,
+    since this is opt-in) don't count for or against the average. Scores
+    100 if --check-coverage never ran at all, same "absence isn't a
+    penalty" rule as score_correctness.
+    """
+    measured = [fm.coverage_ratio for fm in file_metrics_list if fm.coverage_ratio is not None]
+    if not measured:
+        return 100.0
+    return _clamp(sum(measured) / len(measured) * 100)
+
+
 @dataclass
 class CategoryResult:
     score: float
@@ -167,7 +202,7 @@ class ScoreResult:
 
 
 def compute_scores(file_metrics_list, config):
-    """Combine all five category scores into a weighted overall ScoreResult."""
+    """Combine all eight category scores into a weighted overall ScoreResult."""
     functions = [f for fm in file_metrics_list for f in fm.functions]
 
     raw = {
@@ -177,6 +212,8 @@ def compute_scores(file_metrics_list, config):
         "documentation": score_documentation(functions, file_metrics_list),
         "style": score_style(file_metrics_list),
         "security": score_security(file_metrics_list),
+        "correctness": score_correctness(file_metrics_list),
+        "coverage": score_coverage(file_metrics_list),
     }
 
     weights = config.weights

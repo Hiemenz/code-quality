@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 class Issue:
     file: str
     line: int
-    category: str  # complexity | structure | duplication | documentation | style | security
+    category: str  # complexity | structure | duplication | documentation | style | security | correctness
     severity: str  # info | warn | error
     symbol: str
     message: str
@@ -55,6 +55,7 @@ class FileMetrics:
     comment_lines: int = 0
     duplicate_lines: int = 0
     suppressed_count: int = 0
+    coverage_ratio: float = None  # 0.0-1.0, or None if coverage wasn't measured for this file
     parse_error: str = None
 
 

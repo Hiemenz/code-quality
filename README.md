@@ -46,6 +46,10 @@ pip install "git+https://github.com/Hiemenz/code-quality.git"
 # Kotlin/Swift/Scala instead of the heuristic fallback (see "Language
 # support" below):
 pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[treesitter]"
+
+# other optional extras, each backing one opt-in check -- see
+# "Correctness checks", "Test coverage", and "Mutation testing" below:
+pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[types,coverage,mutation]"
 ```
 
 Then, in the target repo:
@@ -109,6 +113,21 @@ codequality trend history.jsonl
 # Snapshot current issues, then gate only on issues beyond that snapshot
 codequality baseline .
 codequality scan . --baseline .codequality-baseline.json --fail-under 70
+
+# Correctness checks: hallucinated imports + real type errors (opt-in)
+codequality scan . --check-imports --check-types
+
+# Did the tests actually exercise this code? (opt-in, runs your test suite)
+codequality scan . --check-coverage
+
+# Does the test suite actually assert behavior, or just run the code?
+codequality mutation .
+
+# AI-assisted vs. human commits: which needs rework sooner after landing?
+codequality churn .
+
+# Property-based test usage + generated Hypothesis stubs to fill in
+codequality scaffold-properties .
 ```
 
 `scan` and `diff` share the same flags:
@@ -123,6 +142,10 @@ codequality scan . --baseline .codequality-baseline.json --fail-under 70
 | `--exclude PATTERN` | Glob to exclude, repeatable |
 | `--no-generic` | Only analyze Python; skip the analyzer for other languages |
 | `--baseline FILE` | Forgive issues already recorded in this baseline file — see below |
+| `--check-imports` | Flag Python imports that don't resolve in this environment (opt-in) |
+| `--check-types` | Run mypy and fold its findings into the correctness category (opt-in) |
+| `--check-coverage` | Run the repo's own test suite under coverage.py (opt-in; executes your code) |
+| `--test-command "..."` | Command to run under `--check-coverage`, as args after `python -m` |
 
 `diff` additionally takes `--base REF` and `--head REF` (default: auto-detect,
 see above).
@@ -131,25 +154,36 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-There's also a `codequality baseline` subcommand (see
-[Baseline mode](#baseline-mode-gating-a-messy-repo-without-a-cleanup-sprint))
-and a `codequality trend FILE` subcommand (see
-[Tracking score history](#tracking-score-history)).
+Four more subcommands, each documented in its own section below:
+`codequality baseline`, `codequality trend FILE`, `codequality churn`, and
+`codequality scaffold-properties`. Plus `codequality mutation`, which is
+deliberately separate from everything else — see
+[Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
 ## How the score is built
 
-Six categories, each 0-100, combined by weight into the overall score:
+Eight categories, each 0-100, combined by weight into the overall score:
 
 | Category | Default weight | What it measures |
 |---|---|---|
-| Complexity | 25 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
-| Structure | 15 | Function length, nesting depth, file length |
-| Duplication | 15 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
-| Documentation | 10 | Docstring coverage on public functions and modules |
-| Style | 15 | Long lines, trailing whitespace, TODO markers, bare `except:`, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
-| Security | 20 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
+| Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
+| Structure | 10 | Function length, nesting depth, file length |
+| Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
+| Documentation | 8 | Docstring coverage on public functions and modules |
+| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
+| Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
+| Correctness | 15 | Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`). 100 until you opt in — see [Correctness checks](#correctness-checks-opt-in) |
+| Coverage | 15 | Opt-in: line coverage from your own test suite (`--check-coverage`). 100 until you opt in — see [Test coverage](#test-coverage-opt-in-executes-your-code) |
+
+The first six categories are pure static analysis — the same "is this code
+tidy and safe" question every linter asks. Correctness and Coverage are a
+different kind of question: "does this code actually work," which nothing
+above can answer without either running it or checking it against a type
+system. See [Correctness checks](#correctness-checks-opt-in) below for why
+that split exists and what it's specifically useful for with LLM-generated
+code.
 
 Each category is scored from *defect density*, not raw counts — a 3,000-line
 file isn't unfairly punished the same as a 30-line file for having one long
@@ -247,6 +281,112 @@ improves. Mechanically it's just a bulk, auto-generated version of the
 inline suppression comments above — same underlying mechanism, generated
 from a snapshot instead of written by hand.
 
+## Correctness checks (opt-in)
+
+Everything above this section is static analysis: it can tell you code is
+tidy, documented, and free of obvious security footguns, but none of it
+can tell you the code actually *does what it's supposed to do*. An LLM can
+write low-complexity, well-documented, secure-looking code that's still
+wrong, and every check above would score it well anyway. Two checks close
+part of that gap — both opt-in, because both depend on the environment
+`codequality` runs in, not on the source alone:
+
+```bash
+codequality scan . --check-imports   # flag imports that don't resolve here
+codequality scan . --check-types     # run mypy, fold results into "correctness"
+```
+
+`--check-imports` catches a well-documented LLM failure mode: inventing a
+plausible-sounding package or module that doesn't actually exist ("package
+hallucination"). It resolves each top-level import against what's actually
+installed in the environment you run `codequality` in — which means it's
+only meaningful if that environment has the target repo's real
+dependencies installed (run it in CI after your normal install step, not
+in a bare virtualenv).
+
+`--check-types` runs `mypy` (`pip install codequality[types]`) over the
+whole repo and folds its errors into the correctness category. Like
+`--check-imports`, results depend on the type hints actually being present
+and on dependencies being resolvable — same environment caveat applies.
+
+## Test coverage (opt-in, executes your code)
+
+```bash
+codequality scan . --check-coverage
+codequality scan . --check-coverage --test-command "pytest -q"
+codequality diff . --check-coverage   # "patch coverage": just the changed lines
+```
+
+Requires `pip install codequality[coverage]`. Untested code is the
+single strongest signal that a change — LLM-written or not — hasn't been
+verified to do anything in particular; did the LLM write tests, and do
+they cover the lines it just changed? This is the one check in
+`codequality` that actually **runs the target repo's own test suite**
+(via `coverage.py`) rather than only parsing source — every other check
+in this tool never executes the code it's scoring. `--test-command` takes
+the args you'd normally pass after `python -m` (default:
+`"unittest discover -s tests"`); override it for `pytest`, `nose2`,
+whatever the repo actually uses. In `diff` mode, the ratio measures just
+the lines that changed ("patch coverage"), not the whole file.
+
+## Mutation testing
+
+```bash
+codequality mutation .
+```
+
+Coverage answers "did anything run this code"; mutation testing answers
+the sharper question: "does the test suite actually notice when the code's
+behavior changes." It's the real antidote to LLM-written tests that pass
+trivially without asserting anything meaningful — `mutmut` mutates the
+code (flips a `<` to `<=`, deletes a line, ...) and reruns your tests
+against each mutant; a mutant that still passes is one your tests didn't
+actually check for. A low kill rate means the tests are theater.
+
+Requires `pip install codequality[mutation]` and a `[tool.mutmut]` section
+in the target repo's `pyproject.toml` (`codequality` never writes to that
+file on your behalf — run `codequality mutation` once and it'll print the
+minimal config to add if it's missing). This is always its own explicit
+command, never part of `scan`: mutmut reruns your test suite once per
+mutant, so even a modest codebase can take minutes.
+
+## Tracking AI vs. human rework
+
+```bash
+codequality churn .
+codequality churn . --marker "Generated-By: MyBot" --window-days 30
+```
+
+An empirical trust signal computed from what actually happened after code
+landed, instead of from re-reading the code: `codequality churn` walks the
+git log, classifies each commit as AI-assisted by a marker string in the
+commit message (default `"Co-Authored-By: Claude"`, matching the trailer
+this tool's own commits use — case-insensitive, since GitHub's squash-merge
+normalizes the casing), and reports what fraction of each group's commits
+had a touched file modified again within a window (default 14 days) —
+a proxy for "did this need a second look soon after landing." Compare the
+AI-assisted rate to the human rate to see whether one source of changes
+needs more follow-up than the other, in *your* repo's actual history.
+
+## Property-based test scaffolding
+
+```bash
+codequality scaffold-properties .
+```
+
+LLMs tend to write narrow, example-based tests that only exercise the
+happy path they were already thinking about. Property-based testing
+(Hypothesis) generates randomized/edge-case inputs against an invariant
+you define, which catches exactly the class of bug a hand-picked example
+is least likely to hit. Writing the actual invariant needs semantic
+understanding this deterministic tool doesn't have — so `scaffold-properties`
+stays honest about scope: it reports how much `@given`-based testing
+already exists, and writes `property_test_stubs.py` with input generation
+wired up from type hints for public functions that don't have one yet.
+The assertion itself is left as a `TODO` for a human (or a supervised LLM)
+to fill in; treat the generated imports as a best-effort guess to be
+checked, not a guarantee.
+
 ## Configuration
 
 Optional `.codequality.toml` (or `.codequality.json`, or a
@@ -257,12 +397,14 @@ Optional `.codequality.toml` (or `.codequality.json`, or a
 fail_under = 70
 
 [weights]
-complexity = 25
-structure = 15
-duplication = 15
-documentation = 10
-style = 15
-security = 20
+complexity = 15
+structure = 10
+duplication = 10
+documentation = 8
+style = 12
+security = 15
+correctness = 15
+coverage = 15
 
 [limits]
 max_line_length = 120
@@ -274,6 +416,13 @@ docstring_min_lines = 8   # don't demand docstrings on tiny helpers
 
 exclude = ["migrations/*", "vendor/*"]
 include_generic_languages = true
+
+# Opt-in correctness/coverage checks (all false by default -- see
+# "Correctness checks" and "Test coverage" above)
+check_imports = false
+check_types = false
+check_coverage = false
+test_command = "unittest discover -s tests"
 ```
 
 All fields are optional and merge over the built-in defaults.

@@ -2,7 +2,7 @@ import unittest
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue
 from codequality.config import Config
-from codequality.scorer import compute_scores, grade, score_security
+from codequality.scorer import compute_scores, grade, score_correctness, score_coverage, score_security
 
 
 def _config():
@@ -74,6 +74,24 @@ class TestScorer(unittest.TestCase):
         result = compute_scores([fm], _config())
         self.assertIn("security", result.categories)
         self.assertLess(result.categories["security"].score, 100.0)
+
+    def test_correctness_score_penalizes_unresolved_imports_and_type_errors(self):
+        clean = FileMetrics(path="clean.py", language="python", total_lines=20, loc=20)
+        dirty = FileMetrics(path="dirty.py", language="python", total_lines=20, loc=20)
+        dirty.issues.append(Issue("dirty.py", 1, "correctness", "error", "unresolved-import", "..."))
+        self.assertEqual(score_correctness([clean]), 100.0)
+        self.assertLess(score_correctness([dirty]), 100.0)
+
+    def test_coverage_score_is_100_when_never_measured(self):
+        """Coverage is opt-in -- absence of a measurement isn't a penalty."""
+        fm = FileMetrics(path="a.py", language="python", total_lines=20, loc=20)
+        self.assertEqual(score_coverage([fm]), 100.0)
+
+    def test_coverage_score_reflects_measured_ratio(self):
+        fully = FileMetrics(path="a.py", language="python", total_lines=20, loc=20, coverage_ratio=1.0)
+        partly = FileMetrics(path="b.py", language="python", total_lines=20, loc=20, coverage_ratio=0.5)
+        self.assertEqual(score_coverage([fully]), 100.0)
+        self.assertEqual(score_coverage([partly]), 50.0)
 
     def test_deterministic_repeated_runs(self):
         """Running the same scorer input repeatedly must always yield the same score."""

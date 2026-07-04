@@ -63,12 +63,14 @@ GENERIC_EXTENSIONS = {
 
 DEFAULT_CONFIG = {
     "weights": {
-        "complexity": 25,
-        "structure": 15,
-        "duplication": 15,
-        "documentation": 10,
-        "style": 15,
-        "security": 20,
+        "complexity": 15,
+        "structure": 10,
+        "duplication": 10,
+        "documentation": 8,
+        "style": 12,
+        "security": 15,
+        "correctness": 15,
+        "coverage": 15,
     },
     "limits": {
         "max_line_length": 120,
@@ -83,6 +85,14 @@ DEFAULT_CONFIG = {
     },
     "exclude": [],
     "include_generic_languages": True,
+    # All three are opt-in (not part of a plain `scan`) because they either
+    # depend on the environment codequality itself runs in, or (coverage)
+    # actually execute the target repo's own test suite -- a different
+    # trust boundary than every other check in this tool. See README.
+    "check_imports": False,
+    "check_types": False,
+    "check_coverage": False,
+    "test_command": "unittest discover -s tests",
 }
 
 
@@ -101,6 +111,10 @@ class Config:
         self.fail_under = merged["thresholds"]["fail_under"]
         self.exclude = list(merged["exclude"])
         self.include_generic_languages = merged["include_generic_languages"]
+        self.check_imports = merged["check_imports"]
+        self.check_types = merged["check_types"]
+        self.check_coverage = merged["check_coverage"]
+        self.test_command = merged["test_command"]
 
     @classmethod
     def load(cls, root, explicit_path=None, overrides=None):

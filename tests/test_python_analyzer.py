@@ -125,6 +125,25 @@ class TestPythonAnalyzer(unittest.TestCase):
         fm = python_analyzer.analyze("f.py", source, _limits())
         self.assertNotIn("bad-function-name", {i.symbol for i in fm.issues})
 
+    def test_unresolved_import_is_flagged_only_when_opted_in(self):
+        """--check-imports depends on this environment, so it must never run implicitly."""
+        source = "import totally_fake_package_xyz_123\n"
+        fm_off = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unresolved-import", {i.symbol for i in fm_off.issues})
+
+        fm_on = python_analyzer.analyze("f.py", source, _limits(), check_imports=True)
+        unresolved = [i for i in fm_on.issues if i.symbol == "unresolved-import"]
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(unresolved[0].category, "correctness")
+
+    def test_resolvable_import_is_not_flagged(self):
+        fm = python_analyzer.analyze("f.py", "import os\n", _limits(), check_imports=True)
+        self.assertNotIn("unresolved-import", {i.symbol for i in fm.issues})
+
+    def test_relative_import_is_not_checked(self):
+        fm = python_analyzer.analyze("f.py", "from . import sibling\n", _limits(), check_imports=True)
+        self.assertNotIn("unresolved-import", {i.symbol for i in fm.issues})
+
     def test_nested_function_does_not_inflate_parent_complexity(self):
         """A closure's branching should count toward its own complexity, not its parent's."""
         source = (

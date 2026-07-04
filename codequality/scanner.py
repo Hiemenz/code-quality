@@ -6,7 +6,7 @@ runs duplicate-block detection across the resulting set.
 import fnmatch
 import os
 
-from codequality import suppress
+from codequality import coverage_check, suppress, typecheck
 from codequality.analyzers import duplication, generic_analyzer, python_analyzer, treesitter_analyzer
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
 
@@ -47,7 +47,9 @@ def _read_source(root, rel_path):
 
 def _run_analyzer(rel_path, source, language, config, only_lines):
     if language == "python":
-        return python_analyzer.analyze(rel_path, source, config.limits, only_lines=only_lines)
+        return python_analyzer.analyze(
+            rel_path, source, config.limits, only_lines=only_lines, check_imports=config.check_imports
+        )
     if treesitter_analyzer.AVAILABLE and language in treesitter_analyzer.LANGUAGES:
         return treesitter_analyzer.analyze(rel_path, source, language, config.limits, only_lines=only_lines)
     return generic_analyzer.analyze(rel_path, source, language, config.limits, only_lines=only_lines)
@@ -82,6 +84,46 @@ def _apply_duplication(root, file_metrics_by_path):
             fm.duplicate_lines = len(idx_set)
 
 
+def _apply_type_checking(root, config, metrics_by_path, changed_files=None):
+    """Run mypy once over the whole root (it needs full-project context for
+    real cross-file inference) and distribute its findings onto the
+    matching FileMetrics. In diff mode, only findings on changed lines
+    count, same scoping rule every other check follows.
+    """
+    if not config.check_types or not typecheck.AVAILABLE:
+        return
+    for rel_path, issues in typecheck.run(root).items():
+        fm = metrics_by_path.get(rel_path)
+        if fm is None:
+            continue
+        for issue in issues:
+            if changed_files is not None and issue.line not in changed_files.get(rel_path, set()):
+                continue
+            fm.issues.append(issue)
+
+
+def _apply_coverage(root, config, metrics_by_path, changed_files=None):
+    """Run the repo's own test suite under coverage.py once and attach a
+    per-file ratio to each matching FileMetrics -- this executes the
+    target repo's code, unlike every other check here, which is why it's
+    opt-in (--check-coverage). In diff mode, the ratio is "patch coverage"
+    (just the added lines), not whole-file coverage.
+    """
+    if not config.check_coverage or not coverage_check.AVAILABLE:
+        return
+    coverage_by_file = coverage_check.run(root, config.test_command)
+    if coverage_by_file is None:
+        return
+    for rel_path, lines in coverage_by_file.items():
+        fm = metrics_by_path.get(rel_path)
+        if fm is None:
+            continue
+        only_lines = changed_files.get(rel_path) if changed_files is not None else None
+        computed = coverage_check.ratio(lines, only_lines)
+        if computed is not None:
+            fm.coverage_ratio = computed
+
+
 def scan_repo(root, config):
     """Full-repo scan: every supported file, in full."""
     files = discover_files(root, config.exclude, config.include_generic_languages)
@@ -94,6 +136,8 @@ def scan_repo(root, config):
         metrics.append(fm)
         metrics_by_path[rel_path] = fm
     _apply_duplication(root, metrics_by_path)
+    _apply_type_checking(root, config, metrics_by_path)
+    _apply_coverage(root, config, metrics_by_path)
     return metrics
 
 
@@ -118,4 +162,6 @@ def scan_changed(root, config, changed_files):
         metrics.append(fm)
         metrics_by_path[rel_path] = fm
     _apply_duplication(root, metrics_by_path)
+    _apply_type_checking(root, config, metrics_by_path, changed_files=changed_files)
+    _apply_coverage(root, config, metrics_by_path, changed_files=changed_files)
     return metrics

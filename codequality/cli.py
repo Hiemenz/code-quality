@@ -3,12 +3,13 @@ import json
 import os
 import sys
 
-from codequality import __version__, baseline as baseline_mod
+from codequality import __version__, baseline as baseline_mod, churn, mutation, property_scaffold
 from codequality.config import Config
+from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
 from codequality.report import build_summary, render_json, render_markdown, render_sarif, render_text
-from codequality.scanner import scan_changed, scan_repo
+from codequality.scanner import discover_files, scan_changed, scan_repo
 from codequality.scorer import compute_scores
 
 
@@ -25,16 +26,26 @@ def _add_common_args(p):
         "--baseline", metavar="FILE",
         help="Forgive issues already recorded in this baseline file (see `codequality baseline`)"
     )
-
-
-def build_parser():
-    """Construct the argparse parser for the `scan` and `diff` subcommands."""
-    parser = argparse.ArgumentParser(
-        prog="codequality", description="Deterministic, programmatic code quality scanner."
+    p.add_argument(
+        "--check-imports", action="store_true",
+        help="Flag Python imports that don't resolve in this environment (opt-in; see README)"
     )
-    parser.add_argument("--version", action="version", version=f"codequality {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    p.add_argument(
+        "--check-types", action="store_true",
+        help="Run mypy and fold its findings into the correctness category (opt-in; requires codequality[types])"
+    )
+    p.add_argument(
+        "--check-coverage", action="store_true",
+        help="Run the repo's own test suite under coverage.py (opt-in; requires codequality[coverage]; "
+             "executes the repo's code -- see README)"
+    )
+    p.add_argument(
+        "--test-command", default=None,
+        help=f'Command to run under coverage, as args after "python -m" (default: "{DEFAULT_TEST_COMMAND}")'
+    )
 
+
+def _add_scan_diff_subparsers(sub):
     scan_p = sub.add_parser("scan", help="Score the entire repository")
     _add_common_args(scan_p)
     scan_p.add_argument(
@@ -47,11 +58,15 @@ def build_parser():
     diff_p.add_argument("--base", default=None, help="Git ref to diff against (default: auto-detect)")
     diff_p.add_argument("--head", default=None, help="Git ref for the 'after' state (default: working tree)")
 
+
+def _add_trend_subparser(sub):
     trend_p = sub.add_parser("trend", help="Show the score trend recorded by `scan --record-history`")
     trend_p.add_argument("history_file", help="Path to the JSONL file written by --record-history")
     trend_p.add_argument("--format", choices=["text", "json"], default="text")
     trend_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
+
+def _add_baseline_subparser(sub):
     baseline_p = sub.add_parser(
         "baseline", help="Snapshot current issues so `--baseline FILE` only fails on new ones"
     )
@@ -64,13 +79,81 @@ def build_parser():
         help="Baseline file to write (default: .codequality-baseline.json)"
     )
 
+
+def _add_churn_subparser(sub):
+    churn_p = sub.add_parser(
+        "churn", help="Compare how often AI-assisted vs. human commits need rework soon after landing"
+    )
+    churn_p.add_argument("path", nargs="?", default=".", help="Git repo root (default: .)")
+    churn_p.add_argument(
+        "--marker", default=churn.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted (default: "{churn.DEFAULT_MARKER}")'
+    )
+    churn_p.add_argument(
+        "--window-days", type=int, default=churn.DEFAULT_WINDOW_DAYS,
+        help=f"Days after a commit to look for follow-up changes to the same files "
+             f"(default: {churn.DEFAULT_WINDOW_DAYS})"
+    )
+    churn_p.add_argument("--since", default=None, help="Only consider commits since this date/ref (git --since syntax)")
+    churn_p.add_argument("--format", choices=["text", "json"], default="text")
+    churn_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_scaffold_subparser(sub):
+    scaffold_p = sub.add_parser(
+        "scaffold-properties",
+        help="Report property-based test usage and generate Hypothesis test stubs (Python only)"
+    )
+    scaffold_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to scan (default: .)")
+    scaffold_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    scaffold_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    scaffold_p.add_argument("--max", type=int, default=25, help="Maximum number of stub tests to generate")
+    scaffold_p.add_argument(
+        "--output", "-o", default="property_test_stubs.py",
+        help="Stub file to write (default: property_test_stubs.py)"
+    )
+
+
+def _add_mutation_subparser(sub):
+    mutation_p = sub.add_parser(
+        "mutation",
+        help="Run mutation testing (mutmut) -- slow; requires [tool.mutmut] config and codequality[mutation]"
+    )
+    mutation_p.add_argument("path", nargs="?", default=".", help="Repo root with a [tool.mutmut] config (default: .)")
+    mutation_p.add_argument("--format", choices=["text", "json"], default="text")
+    mutation_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def build_parser():
+    """Construct the argparse parser for every subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="codequality", description="Deterministic, programmatic code quality scanner."
+    )
+    parser.add_argument("--version", action="version", version=f"codequality {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_scan_diff_subparsers(sub)
+    _add_trend_subparser(sub)
+    _add_baseline_subparser(sub)
+    _add_churn_subparser(sub)
+    _add_scaffold_subparser(sub)
+    _add_mutation_subparser(sub)
+
     return parser
 
 
 def _load_config(args, root):
     overrides = {"exclude": args.exclude} if args.exclude else {}
-    if args.no_generic:
+    if getattr(args, "no_generic", False):
         overrides["include_generic_languages"] = False
+    if getattr(args, "check_imports", False):
+        overrides["check_imports"] = True
+    if getattr(args, "check_types", False):
+        overrides["check_types"] = True
+    if getattr(args, "check_coverage", False):
+        overrides["check_coverage"] = True
+    if getattr(args, "test_command", None):
+        overrides["test_command"] = args.test_command
     config = Config.load(root, explicit_path=args.config, overrides=overrides)
     if args.exclude:
         config.exclude = list(set(config.exclude) | set(args.exclude))
@@ -177,6 +260,66 @@ def cmd_baseline(args):
     return 0
 
 
+def cmd_churn(args):
+    """Handle `codequality churn`: AI-assisted vs. human commit rework rates."""
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        counts = churn.compute(root, marker=args.marker, window_days=args.window_days, since=args.since)
+    except GitError as e:
+        print(f"error: git log failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(counts, indent=2) if args.format == "json" else churn.render_text(counts, args.window_days)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_scaffold_properties(args):
+    """Handle `codequality scaffold-properties`: report + generate Hypothesis stubs."""
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    files = discover_files(root, config.exclude, include_generic=False)
+    python_files = [rel for rel, lang in files if lang == "python"]
+
+    existing = property_scaffold.scan_existing_property_tests(root, python_files)
+    candidates = property_scaffold.find_candidates(root, python_files, limit=args.max)
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        f.write(property_scaffold.render_stub_file(candidates))
+
+    existing_count = sum(existing.values())
+    files_note = f" (in {len(existing)} file(s))" if existing else ""
+    print(f"Existing @given-decorated property tests found: {existing_count}{files_note}")
+    print(f"Candidate functions without property tests: {len(candidates)}")
+    print(f"Wrote {len(candidates)} stub(s) to {args.output}")
+    return 0
+
+
+def cmd_mutation(args):
+    """Handle `codequality mutation`: mutmut kill-rate, the trust signal
+    for whether a test suite actually asserts behavior.
+    """
+    root = os.path.abspath(args.path)
+    if not mutation.AVAILABLE:
+        print("error: mutmut is not installed (pip install codequality[mutation])", file=sys.stderr)
+        return 2
+    if not mutation.is_configured(root):
+        print(mutation.SETUP_HINT, file=sys.stderr)
+        return 2
+    stats = mutation.run(root)
+    if stats is None:
+        print("error: mutmut did not produce results", file=sys.stderr)
+        return 2
+    if args.format == "json":
+        text = json.dumps({**stats, "mutation_score": mutation.mutation_score(stats)}, indent=2)
+    else:
+        text = mutation.render_text(stats)
+    _emit(text, args.output)
+    return 0
+
+
 def main(argv=None):
     """CLI entrypoint; returns the process exit code."""
     parser = build_parser()
@@ -190,6 +333,12 @@ def main(argv=None):
             return cmd_trend(args)
         if args.command == "baseline":
             return cmd_baseline(args)
+        if args.command == "churn":
+            return cmd_churn(args)
+        if args.command == "scaffold-properties":
+            return cmd_scaffold_properties(args)
+        if args.command == "mutation":
+            return cmd_mutation(args)
     except KeyboardInterrupt:
         return 130
     parser.print_help()

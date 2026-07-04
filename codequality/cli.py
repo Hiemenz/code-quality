@@ -407,33 +407,31 @@ def cmd_pipeline(args):
     return 0 if result.passed else 1
 
 
+_COMMANDS = {
+    "scan": cmd_scan,
+    "diff": cmd_diff,
+    "trend": cmd_trend,
+    "baseline": cmd_baseline,
+    "churn": cmd_churn,
+    "edit-distance": cmd_edit_distance,
+    "scaffold-properties": cmd_scaffold_properties,
+    "mutation": cmd_mutation,
+    "pipeline": cmd_pipeline,
+}
+
+
 def main(argv=None):
     """CLI entrypoint; returns the process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    handler = _COMMANDS.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 2
     try:
-        if args.command == "scan":
-            return cmd_scan(args)
-        if args.command == "diff":
-            return cmd_diff(args)
-        if args.command == "trend":
-            return cmd_trend(args)
-        if args.command == "baseline":
-            return cmd_baseline(args)
-        if args.command == "churn":
-            return cmd_churn(args)
-        if args.command == "edit-distance":
-            return cmd_edit_distance(args)
-        if args.command == "scaffold-properties":
-            return cmd_scaffold_properties(args)
-        if args.command == "mutation":
-            return cmd_mutation(args)
-        if args.command == "pipeline":
-            return cmd_pipeline(args)
+        return handler(args)
     except KeyboardInterrupt:
         return 130
-    parser.print_help()
-    return 2
 
 
 if __name__ == "__main__":

@@ -687,14 +687,27 @@ tab instead of a PR comment), add a SARIF step:
 ## Tracking score history
 
 `scan --record-history FILE` appends one JSON line per run (timestamp,
-overall score, per-category scores) to `FILE`. `codequality trend FILE`
-renders a sparkline and a score/grade/delta table across every recorded
-run:
+overall score, per-category scores, plus `test_loc`/`source_loc`/
+`test_ratio` -- see below) to `FILE`. `codequality trend FILE` renders a
+sparkline and a score/grade/delta table across every recorded run,
+followed by the same for the test-to-source LOC ratio:
 
 ```bash
 codequality scan . --record-history codequality-history.jsonl
 codequality trend codequality-history.jsonl
 ```
+
+Every recorded run also splits lines of code into `test_loc` and
+`source_loc`, plus a `test_ratio = test_loc / source_loc` (each scanned
+file is classified as a test file if its name matches `test_*.py`/
+`*_test.py`, or it lives in a `tests/`/`test/` directory -- the same
+convention `codequality scaffold-properties` already uses to skip test
+files when looking for functions that need one). `test_ratio` is `null`
+when `source_loc` is 0 (e.g. a test-only checkout) rather than dividing by
+zero. `codequality trend FILE --format json` includes these fields on
+every entry alongside `overall`/`grade`/`categories`; the text report adds
+a second "Test Ratio History" section below the score table, in the same
+sparkline + table style.
 
 The cheapest way to persist `FILE` across CI runs is to just commit it to
 the repo (add a step to your main-branch workflow that commits the updated

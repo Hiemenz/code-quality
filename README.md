@@ -142,6 +142,10 @@ codequality commit-lint .
 # blame) to AI-assisted vs. human commits, per 1,000 lines?
 codequality hallucination-rate . --check-imports --check-types
 
+# Does the test suite pass reliably, or does a test's result depend on
+# luck? (opt-in, runs your test suite N times -- can be slow)
+codequality flakiness .
+
 # Property-based test usage + generated Hypothesis stubs to fill in
 codequality scaffold-properties .
 
@@ -177,15 +181,17 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Ten more subcommands, each documented in its own section below:
+Eleven more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`, and
 `codequality api-diff` (public API comparison between any two git refs —
 see [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
-Plus `codequality mutation`, which is deliberately separate from everything
-else — see [Mutation testing](#mutation-testing).
+Plus `codequality mutation` and `codequality flakiness`, which are
+deliberately separate from everything else — see
+[Mutation testing](#mutation-testing) and
+[Flaky test detection](#flaky-test-detection-executes-your-tests-n-times).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -504,6 +510,37 @@ file on your behalf — run `codequality mutation` once and it'll print the
 minimal config to add if it's missing). This is always its own explicit
 command, never part of `scan`: mutmut reruns your test suite once per
 mutant, so even a modest codebase can take minutes.
+
+## Flaky test detection (executes your tests N times)
+
+```bash
+codequality flakiness .
+codequality flakiness . --runs 10 --test-command "pytest -q"
+```
+
+**This runs the target repo's own test suite repeatedly** — like
+`--check-coverage`, it's in the "executes your code" trust-boundary
+category, which is why it's a separate, explicitly-invoked subcommand
+rather than something folded into `scan`/`diff`, and why it can be slow
+(`--runs` executions of the whole suite; the default is 5). No judgment
+is involved — it's deterministic repeated execution and comparison, not
+a heuristic: a test is reported flaky if its pass/fail/error result
+differs across at least two of the `--runs` runs.
+
+`--test-command` takes the same convention as `--check-coverage` — the
+args you'd normally pass after `python -m` (default: `"unittest discover
+-s tests"`). A verbose flag (`-v`) is added automatically for recognized
+`unittest`/`pytest` invocations so `codequality` can parse per-test
+results out of the output; anything else (a custom runner, `nose2`, a
+Makefile wrapper, ...) still runs `--runs` times, but the report falls
+back to overall per-run pass/fail counts only, since there's no per-test
+result to extract from output in a format `codequality` doesn't
+recognize.
+
+Report shape: total runs, and for each flaky test its sequence of
+per-run results plus a flip count (how many times the result changed
+between consecutive runs); a clean run reports `"N tests, N runs, 0
+flaky"`.
 
 ## Tracking AI vs. human rework
 

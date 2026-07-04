@@ -112,6 +112,7 @@ def score_style(file_metrics_list):
         "tab-indent": 1,
         "todo-marker": 0.5,
         "bare-except": 4,
+        "broad-except-swallow": 4,
         "star-import": 3,
         "mutable-default-arg": 4,
         "unused-import": 2,
@@ -156,12 +157,15 @@ def score_security(file_metrics_list):
 def score_correctness(file_metrics_list):
     """Score issues that suggest the code may not actually work -- as
     opposed to being merely unpolished or insecure -- weighted by
-    severity, per 100 lines of code. Only populated when the opt-in
-    --check-imports/--check-types passes have run; otherwise 100.
+    severity, per 100 lines of code. `unresolved-import`/`type-error` only
+    show up when the opt-in --check-imports/--check-types passes have run;
+    the rest are always-on static checks.
     """
     weights = {
         "unresolved-import": 20,
         "type-error": 12,
+        "assertion-free-test": 6,
+        "unreachable-code": 8,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:

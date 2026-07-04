@@ -12,7 +12,10 @@ import importlib.util
 import re
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
+from codequality.analyzers.python_docstring_drift import docstring_drift_issues
 from codequality.analyzers.python_security import security_issues
+from codequality.analyzers.python_test_quality import assertion_free_test_issues
+from codequality.analyzers.python_unreachable import unreachable_code_issues
 
 TODO_RE = re.compile(r"#\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
 
@@ -412,12 +415,52 @@ def _process_function(node, path, limits, fm, only_lines):
     fm.functions.append(fn)
     fm.issues.extend(_check_function_issues(fn, node, path, limits))
     fm.issues.extend(_find_unused_variables(node, path, only_lines))
+    fm.issues.extend(assertion_free_test_issues(node, path))
+    fm.issues.extend(docstring_drift_issues(node, path))
 
 
 def _check_bare_except(node, path, only_lines):
     if isinstance(node, ast.ExceptHandler) and node.type is None and _in_scope(node, only_lines):
         return Issue(path, node.lineno, "style", "warn", "bare-except", "Bare 'except:' clause")
     return None
+
+
+_BROAD_EXCEPTION_NAMES = {"Exception", "BaseException"}
+
+
+def _is_broad_exception_type(type_node):
+    if isinstance(type_node, ast.Name):
+        return type_node.id in _BROAD_EXCEPTION_NAMES
+    if isinstance(type_node, ast.Tuple):
+        return any(isinstance(e, ast.Name) and e.id in _BROAD_EXCEPTION_NAMES for e in type_node.elts)
+    return False
+
+
+def _handler_swallows_silently(handler):
+    """True if the handler's body does nothing but `pass` (optionally with
+    a leading string-literal "comment") -- no re-raise, no logging, no
+    return signal. A real cleanup/logging call in the body is treated as
+    "doing something" even if it's not a great fix, to keep false
+    positives low.
+    """
+    body = [s for s in handler.body if not isinstance(s, ast.Pass)]
+    if not body:
+        return True
+    is_bare_string = (
+        isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    )
+    return len(body) == 1 and is_bare_string
+
+
+def _check_broad_except_swallow(node, path, only_lines):
+    if not isinstance(node, ast.ExceptHandler) or node.type is None or not _in_scope(node, only_lines):
+        return None
+    if not _is_broad_exception_type(node.type) or not _handler_swallows_silently(node):
+        return None
+    return Issue(path, node.lineno, "style", "warn", "broad-except-swallow",
+                 "Catches Exception/BaseException and silently discards it -- failures here vanish with no trace")
 
 
 def _check_star_import(node, path, only_lines):
@@ -436,7 +479,7 @@ def _check_class_name(node, path, only_lines):
     return Issue(path, node.lineno, "style", "info", "bad-class-name", f"Class '{node.name}' should be PascalCase")
 
 
-_OTHER_NODE_CHECKS = (_check_bare_except, _check_star_import, _check_class_name)
+_OTHER_NODE_CHECKS = (_check_bare_except, _check_broad_except_swallow, _check_star_import, _check_class_name)
 
 
 def _process_other_node(node, path, only_lines, fm):
@@ -465,7 +508,11 @@ def _walk_tree(tree, path, limits, only_lines, fm):
 
 
 def _module_level_issues(tree, path, only_lines, check_imports):
-    issues = _unused_import_issues(tree, path, only_lines) + security_issues(tree, path, only_lines)
+    issues = (
+        _unused_import_issues(tree, path, only_lines)
+        + security_issues(tree, path, only_lines)
+        + unreachable_code_issues(tree, path, only_lines)
+    )
     if check_imports:
         issues += _unresolved_import_issues(tree, path, only_lines)
     return issues

@@ -126,6 +126,9 @@ codequality mutation .
 # AI-assisted vs. human commits: which needs rework sooner after landing?
 codequality churn .
 
+# Of the lines a commit added, how many are unchanged at HEAD vs. rewritten?
+codequality edit-distance .
+
 # Property-based test usage + generated Hypothesis stubs to fill in
 codequality scaffold-properties .
 ```
@@ -154,11 +157,11 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Four more subcommands, each documented in its own section below:
-`codequality baseline`, `codequality trend FILE`, `codequality churn`, and
-`codequality scaffold-properties`. Plus `codequality mutation`, which is
-deliberately separate from everything else — see
-[Mutation testing](#mutation-testing).
+Five more subcommands, each documented in its own section below:
+`codequality baseline`, `codequality trend FILE`, `codequality churn`,
+`codequality edit-distance`, and `codequality scaffold-properties`. Plus
+`codequality mutation`, which is deliberately separate from everything
+else — see [Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -396,6 +399,27 @@ had a touched file modified again within a window (default 14 days) —
 a proxy for "did this need a second look soon after landing." Compare the
 AI-assisted rate to the human rate to see whether one source of changes
 needs more follow-up than the other, in *your* repo's actual history.
+
+## Edit distance: how much of a commit survives to HEAD
+
+```bash
+codequality edit-distance .
+codequality edit-distance . --marker "Generated-By: MyBot" --since "3 months ago"
+```
+
+`churn` answers "did this commit's *files* get touched again soon after" —
+file-level. `edit-distance` answers the sharper, line-level version: of
+the lines a commit *added*, how many are still exactly as that commit left
+them? For each classified commit, it diffs against the first parent to
+find the lines it added, then blames `HEAD` for every file it touched to
+see how many of those exact lines are still attributed to that commit.
+`edit_distance` is `1 - lines_survived / lines_added` — 0.0 means nothing
+has changed since, 1.0 means every added line has since been rewritten or
+removed. This is a proxy for "how many lines does a developer end up
+changing before/after a change lands," adapted to a single git history
+instead of needing a PR review API. Same marker/`--since` conventions as
+`churn`; commits that only delete lines are skipped since the ratio is
+undefined for them.
 
 ## Property-based test scaffolding
 

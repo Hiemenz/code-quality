@@ -3,7 +3,7 @@ import json
 import os
 import sys
 
-from codequality import __version__, baseline as baseline_mod, churn, mutation, property_scaffold
+from codequality import __version__, baseline as baseline_mod, churn, edit_distance, mutation, property_scaffold
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, is_git_repo, resolve_default_base
@@ -99,6 +99,22 @@ def _add_churn_subparser(sub):
     churn_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_edit_distance_subparser(sub):
+    edit_distance_p = sub.add_parser(
+        "edit-distance", help="Compare how much of AI-assisted vs. human commits' added lines survive to HEAD"
+    )
+    edit_distance_p.add_argument("path", nargs="?", default=".", help="Git repo root (default: .)")
+    edit_distance_p.add_argument(
+        "--marker", default=edit_distance.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted (default: "{edit_distance.DEFAULT_MARKER}")'
+    )
+    edit_distance_p.add_argument(
+        "--since", default=None, help="Only consider commits since this date/ref (git --since syntax)"
+    )
+    edit_distance_p.add_argument("--format", choices=["text", "json"], default="text")
+    edit_distance_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_scaffold_subparser(sub):
     scaffold_p = sub.add_parser(
         "scaffold-properties",
@@ -136,6 +152,7 @@ def build_parser():
     _add_trend_subparser(sub)
     _add_baseline_subparser(sub)
     _add_churn_subparser(sub)
+    _add_edit_distance_subparser(sub)
     _add_scaffold_subparser(sub)
     _add_mutation_subparser(sub)
 
@@ -276,6 +293,24 @@ def cmd_churn(args):
     return 0
 
 
+def cmd_edit_distance(args):
+    """Handle `codequality edit-distance`: how much of AI-assisted vs. human
+    commits' added lines are still there at HEAD, unchanged.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        counts = edit_distance.compute(root, marker=args.marker, since=args.since)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(counts, indent=2) if args.format == "json" else edit_distance.render_text(counts)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_scaffold_properties(args):
     """Handle `codequality scaffold-properties`: report + generate Hypothesis stubs."""
     root = os.path.abspath(args.path)
@@ -335,6 +370,8 @@ def main(argv=None):
             return cmd_baseline(args)
         if args.command == "churn":
             return cmd_churn(args)
+        if args.command == "edit-distance":
+            return cmd_edit_distance(args)
         if args.command == "scaffold-properties":
             return cmd_scaffold_properties(args)
         if args.command == "mutation":

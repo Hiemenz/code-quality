@@ -129,6 +129,10 @@ codequality churn .
 # Of the lines a commit added, how many are unchanged at HEAD vs. rewritten?
 codequality edit-distance .
 
+# Of the hallucination-style findings above, how many trace back (via git
+# blame) to AI-assisted vs. human commits, per 1,000 lines?
+codequality hallucination-rate . --check-imports --check-types
+
 # Property-based test usage + generated Hypothesis stubs to fill in
 codequality scaffold-properties .
 
@@ -161,11 +165,12 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Six more subcommands, each documented in its own section below:
+Seven more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
-`codequality edit-distance`, `codequality scaffold-properties`, and
-`codequality pipeline`. Plus `codequality mutation`, which is deliberately
-separate from everything else — see [Mutation testing](#mutation-testing).
+`codequality edit-distance`, `codequality hallucination-rate`,
+`codequality scaffold-properties`, and `codequality pipeline`. Plus
+`codequality mutation`, which is deliberately separate from everything
+else — see [Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -445,6 +450,30 @@ changing before/after a change lands," adapted to a single git history
 instead of needing a PR review API. Same marker/`--since` conventions as
 `churn`; commits that only delete lines are skipped since the ratio is
 undefined for them.
+
+## Hallucination rate
+
+```bash
+codequality hallucination-rate . --check-imports --check-types
+codequality hallucination-rate . --check-imports --marker "Generated-By: MyBot"
+```
+
+`churn` looks at commit history alone; this looks at the actual findings
+from `--check-imports`/`--check-types` (see
+[Correctness checks](#correctness-checks-opt-in) above) and attributes
+each flagged line to whoever last touched it, via `git blame -w HEAD`.
+Every scanned file's commit shas are classified AI-assisted vs. human by
+the same marker-substring rule as `churn` (default
+`"Co-Authored-By: Claude"`, case-insensitive), then rolled up per group
+into total lines of code, flagged lines, and a rate per 1,000 lines
+(`flagged / loc * 1000`). Unlike `churn`, which is file-level and answers
+"did this file need a second look," this is line-level and answers a
+narrower question: of the code each source is responsible for, how much
+of it is an unresolved import or a real type error — the two checks this
+tool has that most directly catch LLM hallucination. Requires at least
+one of `--check-imports`/`--check-types` (that's what produces the
+findings being rolled up); `--check-types` additionally needs
+`pip install codequality[types]`.
 
 ## Property-based test scaffolding
 

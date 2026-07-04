@@ -4,7 +4,8 @@ import os
 import sys
 
 from codequality import (
-    __version__, baseline as baseline_mod, churn, edit_distance, mutation, pipeline, property_scaffold,
+    __version__, baseline as baseline_mod, churn, edit_distance, hallucination_metrics, mutation, pipeline,
+    property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -168,6 +169,30 @@ def _add_pipeline_subparser(sub):
     )
 
 
+def _add_hallucination_rate_subparser(sub):
+    hall_p = sub.add_parser(
+        "hallucination-rate",
+        help="Roll up --check-imports/--check-types findings by AI-assisted vs. human git-blame attribution"
+    )
+    hall_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
+    hall_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    hall_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    hall_p.add_argument(
+        "--check-imports", action="store_true",
+        help="Roll up unresolved-import findings (at least one of --check-imports/--check-types is required)"
+    )
+    hall_p.add_argument(
+        "--check-types", action="store_true",
+        help="Roll up mypy type-error findings (requires codequality[types])"
+    )
+    hall_p.add_argument(
+        "--marker", default=hallucination_metrics.DEFAULT_MARKER,
+        help=f'Substring marking a commit AI-assisted (default: "{hallucination_metrics.DEFAULT_MARKER}")'
+    )
+    hall_p.add_argument("--format", choices=["text", "json"], default="text")
+    hall_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -184,6 +209,7 @@ def build_parser():
     _add_scaffold_subparser(sub)
     _add_mutation_subparser(sub)
     _add_pipeline_subparser(sub)
+    _add_hallucination_rate_subparser(sub)
 
     return parser
 
@@ -407,6 +433,28 @@ def cmd_pipeline(args):
     return 0 if result.passed else 1
 
 
+def cmd_hallucination_rate(args):
+    """Handle `codequality hallucination-rate`: AI-assisted vs. human
+    attribution of --check-imports/--check-types findings, per 1,000 LOC.
+    """
+    if not args.check_imports and not args.check_types:
+        print("error: hallucination-rate requires --check-imports and/or --check-types", file=sys.stderr)
+        return 2
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    config = _load_config(args, root)
+    try:
+        counts = hallucination_metrics.compute(root, config, marker=args.marker)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(counts, indent=2) if args.format == "json" else hallucination_metrics.render_text(counts)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -417,6 +465,7 @@ _COMMANDS = {
     "scaffold-properties": cmd_scaffold_properties,
     "mutation": cmd_mutation,
     "pipeline": cmd_pipeline,
+    "hallucination-rate": cmd_hallucination_rate,
 }
 
 

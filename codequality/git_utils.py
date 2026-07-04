@@ -104,3 +104,24 @@ def parse_added_lines(diff_text):
 def get_changed_files(base, head, cwd):
     diff_text = get_diff_text(base, head, cwd)
     return parse_added_lines(diff_text)
+
+
+def get_file_at_ref(ref, path, cwd):
+    """Content of `path` as it existed at `ref`, or None if the file didn't
+    exist there yet (a newly-added file has no "old version" to compare).
+    """
+    try:
+        return _run(["show", f"{ref}:{path}"], cwd)
+    except GitError:
+        return None
+
+
+def get_last_commit_subject(cwd):
+    """The most recent commit's subject line, used as the default "task
+    description" for scope-mismatch checking when nothing more specific
+    is given.
+    """
+    try:
+        return _run(["log", "-1", "--format=%s"], cwd).strip()
+    except GitError:
+        return None

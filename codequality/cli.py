@@ -4,14 +4,12 @@ import os
 import sys
 
 from codequality import (
-    __version__, baseline as baseline_mod, churn, edit_distance, hallucination_metrics, llm_judge, mutation,
-    pipeline, property_scaffold,
+    __version__, baseline as baseline_mod, churn, edit_distance, hallucination_metrics, mutation, pipeline,
+    property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
-from codequality.git_utils import (
-    GitError, get_changed_files, get_diff_text, get_last_commit_subject, is_git_repo, resolve_default_base,
-)
+from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
 from codequality.report import build_summary, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import discover_files, scan_changed, scan_repo
@@ -47,22 +45,6 @@ def _add_common_args(p):
     p.add_argument(
         "--test-command", default=None,
         help=f'Command to run under coverage, as args after "python -m" (default: "{DEFAULT_TEST_COMMAND}")'
-    )
-    p.add_argument(
-        "--llm-review", action="store_true",
-        help="Ask an LLM to judge architecture/readability/instruction-adherence (opt-in; makes a network "
-             "call, costs money, is not reproducible, and never affects the score -- requires "
-             "codequality[llm] and ANTHROPIC_API_KEY; see README)"
-    )
-    p.add_argument(
-        "--llm-model", default=None,
-        help=f"Override the model used for --llm-review (default: {llm_judge.DEFAULT_MODEL}, "
-             f"or ${llm_judge.MODEL_ENV_VAR})"
-    )
-    p.add_argument(
-        "--llm-task", metavar="TEXT", default=None,
-        help="The task/prompt text the reviewed code was supposed to implement, for the "
-             "instruction-adherence score under --llm-review (omit to leave that score unset)"
     )
 
 
@@ -260,75 +242,6 @@ def _render(summary, fmt):
     return render_text(summary, use_color=sys.stdout.isatty())
 
 
-def _llm_review_precheck(args):
-    """Fail fast, before doing any scan work, when --llm-review can't
-    possibly succeed -- missing extra or missing API key. Returns an error
-    message to print to stderr, or None if the review can proceed.
-    """
-    if not args.llm_review:
-        return None
-    if not llm_judge.AVAILABLE:
-        return "error: --llm-review requires the 'anthropic' package (pip install codequality[llm])"
-    if not os.environ.get(llm_judge.ANTHROPIC_KEY_ENV_VAR):
-        return f"error: --llm-review requires the {llm_judge.ANTHROPIC_KEY_ENV_VAR} environment variable to be set"
-    return None
-
-
-def _read_file_for_review(root, rel_path):
-    try:
-        with open(os.path.join(root, rel_path), "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return None
-
-
-def _scan_review_content(root, summary):
-    """`scan` mode reviews the lowest-scoring files (per the deterministic
-    score) rather than the whole repo -- bounds the size/cost of the LLM
-    request regardless of repo size. See README.
-    """
-    content = {}
-    for wf in summary["worst_files"]:
-        text = _read_file_for_review(root, wf["path"])
-        if text is not None:
-            content[wf["path"]] = text
-    return content
-
-
-def _run_llm_review(args, content):
-    try:
-        return llm_judge.judge(content, task_description=args.llm_task, model=args.llm_model), None
-    except llm_judge.LLMJudgeError as e:
-        return None, f"error: {e}"
-
-
-def _attach_scan_llm_review(args, root, summary):
-    """Run --llm-review for `scan` mode and attach it to summary["llm_review"].
-    Returns an error message on failure (nothing attached), else None.
-    """
-    review, error = _run_llm_review(args, _scan_review_content(root, summary))
-    if error:
-        return error
-    summary["llm_review"] = review
-    return None
-
-
-def _attach_diff_llm_review(args, root, base, head, summary):
-    """Run --llm-review for `diff` mode: fetch the full diff text (with
-    context, unlike the -U0 diff used for scoring) and attach the result to
-    summary["llm_review"]. Returns an error message on failure, else None.
-    """
-    try:
-        diff_text = get_diff_text(base, head, root)
-    except GitError as e:
-        return f"error: git diff failed: {e}"
-    review, error = _run_llm_review(args, diff_text)
-    if error:
-        return error
-    summary["llm_review"] = review
-    return None
-
-
 def _emit(text, output_path):
     if output_path:
         with open(output_path, "w", encoding="utf-8") as f:
@@ -339,11 +252,6 @@ def _emit(text, output_path):
 
 def cmd_scan(args):
     """Handle `codequality scan`: full-repo scan, returns the process exit code."""
-    error = _llm_review_precheck(args)
-    if error:
-        print(error, file=sys.stderr)
-        return 2
-
     root = os.path.abspath(args.path)
     config = _load_config(args, root)
     fail_under = args.fail_under if args.fail_under is not None else config.fail_under
@@ -357,25 +265,19 @@ def cmd_scan(args):
     if args.record_history:
         append_entry(args.record_history, summary)
 
-    if args.llm_review:
-        error = _attach_scan_llm_review(args, root, summary)
-        if error:
-            print(error, file=sys.stderr)
-            return 2
-
     _emit(_render(summary, args.format), args.output)
     return 0 if summary["threshold"]["passed"] else 1
 
 
-def _prepare_diff(args, root):
-    """Resolve the git repo / base / head / changed-files inputs `diff` mode
-    needs. Returns (base, head, changed_files, early_exit_code); when
-    early_exit_code is not None, the appropriate message is already printed
-    and the caller should return it immediately without doing anything else.
-    """
+def cmd_diff(args):
+    """Handle `codequality diff`: git-diff-scoped scan, returns the process exit code."""
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    fail_under = args.fail_under if args.fail_under is not None else config.fail_under
+
     if not is_git_repo(root):
         print(f"error: {root} is not a git repository (diff mode requires git)", file=sys.stderr)
-        return None, None, None, 2
+        return 2
 
     base, auto_head = args.base, None
     if base is None:
@@ -386,29 +288,11 @@ def _prepare_diff(args, root):
         changed_files = get_changed_files(base, head, root)
     except GitError as e:
         print(f"error: git diff failed: {e}", file=sys.stderr)
-        return None, None, None, 2
+        return 2
 
     if not changed_files:
         print(f"No changed files between {base} and {head or 'working tree'}.")
-        return None, None, None, 0
-
-    return base, head, changed_files, None
-
-
-def cmd_diff(args):
-    """Handle `codequality diff`: git-diff-scoped scan, returns the process exit code."""
-    error = _llm_review_precheck(args)
-    if error:
-        print(error, file=sys.stderr)
-        return 2
-
-    root = os.path.abspath(args.path)
-    config = _load_config(args, root)
-    fail_under = args.fail_under if args.fail_under is not None else config.fail_under
-
-    base, head, changed_files, early_exit = _prepare_diff(args, root)
-    if early_exit is not None:
-        return early_exit
+        return 0
 
     task_description = args.task_description if args.task_description is not None else get_last_commit_subject(root)
     file_metrics = scan_changed(root, config, changed_files, base=base, task_description=task_description)
@@ -422,12 +306,6 @@ def cmd_diff(args):
         "changed_lines_count": sum(len(v) for v in changed_files.values()),
     }
     summary = build_summary(file_metrics, score_result, "diff", root, diff_info=diff_info, fail_under=fail_under)
-
-    if args.llm_review:
-        error = _attach_diff_llm_review(args, root, base, head, summary)
-        if error:
-            print(error, file=sys.stderr)
-            return 2
 
     _emit(_render(summary, args.format), args.output)
     return 0 if summary["threshold"]["passed"] else 1

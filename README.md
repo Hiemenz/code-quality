@@ -48,9 +48,8 @@ pip install "git+https://github.com/Hiemenz/code-quality.git"
 pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[treesitter]"
 
 # other optional extras, each backing one opt-in check -- see
-# "Correctness checks", "Test coverage", "Mutation testing", and
-# "Optional: LLM-based review" below:
-pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[types,coverage,mutation,llm]"
+# "Correctness checks", "Test coverage", and "Mutation testing" below:
+pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[types,coverage,mutation]"
 ```
 
 Then, in the target repo:
@@ -158,9 +157,6 @@ codequality pipeline .
 | `--check-types` | Run mypy and fold its findings into the correctness category (opt-in) |
 | `--check-coverage` | Run the repo's own test suite under coverage.py (opt-in; executes your code) |
 | `--test-command "..."` | Command to run under `--check-coverage`, as args after `python -m` |
-| `--llm-review` | Ask an LLM to judge architecture/readability/instruction-adherence (opt-in; network call, costs money, not reproducible -- see [Optional: LLM-based review](#optional-llm-based-review-not-part-of-the-deterministic-score)) |
-| `--llm-model MODEL` | Override the model used by `--llm-review` (default: `claude-haiku-4-5-20251001`, or `$CODEQUALITY_LLM_MODEL`) |
-| `--llm-task "..."` | The task/prompt text the reviewed code was supposed to implement, so `--llm-review` can score instruction adherence (omit to leave that score unset) |
 
 `diff` additionally takes `--base REF` and `--head REF` (default: auto-detect,
 see above).
@@ -553,67 +549,6 @@ codequality score cleared the threshold.
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 | `--continue-on-failure` | Run every step even after one fails |
-
-### Optional: LLM-based review (not part of the deterministic score)
-
-```bash
-export ANTHROPIC_API_KEY=sk-...
-codequality scan . --llm-review
-codequality diff . --llm-review --llm-task "Add retry logic to the upload path"
-codequality scan . --llm-review --llm-model claude-opus-4-8
-```
-
-Be clear-eyed about what this is: **this is the one feature in `codequality`
-that breaks the "no LLM calls, no network access" promise from the top of
-this README.** It makes a real API call to Anthropic, costs real money per
-run, and — unlike every deterministic check above — the same input is not
-guaranteed to produce the same output twice. It exists because two
-questions genuinely can't be answered by parsing: is this a *good design*
-for the problem, and does this diff do *what the task actually asked* (no
-more, no less)? Those require judgment, not a formula, so this is the one
-place in the tool that reaches for an LLM instead of `ast`.
-
-Because it contradicts the tool's core promise, it's designed to be
-impossible to trigger by accident:
-
-- **Opt-in flag, always.** `--llm-review` is never implied by anything else,
-  and `scan`/`diff` behave identically whether or not this feature exists
-  if you don't pass it.
-- **Opt-in extra, always.** The `anthropic` package is not a base dependency
-  -- `pip install codequality[llm]` is required, following the exact
-  `AVAILABLE`-flag pattern used by `--check-types` (mypy) and
-  `--check-coverage` (coverage.py). Passing `--llm-review` without the extra
-  installed, or without `ANTHROPIC_API_KEY` set, prints a clear error to
-  stderr and exits non-zero -- it never silently skips the check you asked
-  for, and it never fabricates a score in its place.
-- **Never part of the 0-100 score.** The result is reported under its own
-  top-level `"llm_review"` key (JSON), or a clearly labeled "LLM Review
-  (opt-in, subjective -- not part of the score)" section (text/markdown) --
-  never folded into `categories`, and never affects `--fail-under` gating
-  or `--record-history`.
-- **API key from the environment only.** `ANTHROPIC_API_KEY` is read from
-  the environment, never from `.codequality.toml` or any other config file,
-  so a key can't accidentally end up committed to the target repo.
-
-What it reports, per run: a 0-10 **architecture** score, a 0-10
-**readability** score, a 0-10 **instruction adherence** score (only when
-`--llm-task "..."` is given a description of what the code was supposed to
-do -- otherwise this is left `null`/unset rather than the model inventing a
-task to grade against), and a short rationale.
-
-Scope of what gets sent to the model: `codequality diff --llm-review` sends
-the full unified diff (with context, unlike the `-U0` diff used for
-scoring). `codequality scan --llm-review` sends the contents of the
-lowest-scoring files (the same list as the "Lowest-scoring files" table),
-not the whole repository -- this bounds the size and cost of the request
-regardless of repo size, at the cost of not reviewing files the
-deterministic score already considers healthy.
-
-Model choice: the default is `claude-haiku-4-5-20251001`, Anthropic's fastest and
-cheapest current model -- appropriate for a linting-adjacent check that
-might run on every PR. Override it with `--llm-model` or
-`$CODEQUALITY_LLM_MODEL` if you want a more capable (and more expensive)
-model's judgment instead.
 
 ## Configuration
 

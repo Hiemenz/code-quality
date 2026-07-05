@@ -172,6 +172,11 @@ codequality complexity-regression . --from v1.2 --to v1.3
 # -- no network access, ever (see "Dependency consistency check" below)
 codequality dependency-check .
 
+# Which declared dependencies are both heavily imported AND structurally
+# risky (per dependency-check above) -- offline impact-weighted priority
+# list, NOT a staleness/CVE check (see "Dependency risk" below)
+codequality dependency-risk .
+
 # Which files are both complex AND changed constantly -- the highest-risk
 # refactoring targets (see "Hotspots" below)
 codequality hotspots .
@@ -234,7 +239,10 @@ Twenty-one more subcommands, each documented in its own section below:
 `codequality dead-code-confidence`,
 `codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`,
-`codequality dependency-check`, `codequality env-check`,
+`codequality dependency-check`, `codequality dependency-risk` (usage count
+x `dependency-check`'s own structural flags — see [Dependency
+risk](#dependency-risk-usage-count-x-structural-risk-flags)),
+`codequality env-check`,
 `codequality history-secrets` (secrets that were ever committed, even if
 since removed — see [Secrets in git history](#secrets-in-git-history)),
 `codequality large-files`, `codequality hotspots` (complexity crossed with
@@ -1143,6 +1151,66 @@ standalone subcommand, not folded into `scan`'s score.
 | Flag | Meaning |
 |---|---|
 | `path` | Repo root to check (default `.`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+## Dependency risk: usage count x structural risk flags
+
+```bash
+codequality dependency-risk .
+codequality dependency-risk . --top 10 --format json
+```
+
+**This is not a staleness or CVE check, and it can't become one.** The
+natural next question after `dependency-check` above is "which of these
+dependencies is most worth fixing first" -- which usually means "which
+ones are outdated and heavily used." Answering "is this the latest
+version" requires asking a package registry (PyPI/npm), and this tool's
+core promise, stated at the top of this README, is no network access,
+ever. `dependency-risk` answers a narrower, honest version of that
+question instead, built entirely from two signals this tool already
+computes offline:
+
+- **usage count** -- how many times each declared dependency is actually
+  imported across the codebase's Python files, via a real `ast` walk
+  (`Import`/`ImportFrom` nodes, matched on the top-level module name --
+  e.g. `import requests.sessions` and `from requests.auth import
+  HTTPBasicAuth` both count as one use of `requests`). This is a proxy for
+  "how much of the codebase would be affected if this package broke or
+  had to be migrated off of." **Python-only in this first version** --
+  there's no per-ecosystem regex fallback for JS `require`/`import`, Go,
+  Ruby, etc., the same "document the limitation plainly instead of
+  half-implementing it" choice this tool makes elsewhere (see `doc
+  examples` above). Declared npm packages are still listed, always with
+  `usage_count = 0`. Matching a declared PyPI name to the module Python
+  code actually imports is a simple, deterministic normalization
+  (lowercase, `-`/`.` collapsed to `_`) -- it does **not** resolve the
+  well-known cases where a package's PyPI name and import name differ
+  (`PyYAML` -> `yaml`, `beautifulsoup4` -> `bs4`, `python-dateutil` ->
+  `dateutil`, ...); see `codequality/dependency_risk.py`'s module
+  docstring for why that's a deliberate limitation rather than a
+  hardcoded alias table.
+- **structural risk flags** -- reuses `dependency-check`'s own findings
+  directly (`inconsistent-pinning`, `duplicate-dependency`,
+  `unpinned-in-lockfile-repo`, all described above): no new detection
+  logic, this feature is purely a recombination.
+
+`risk_score` is the package's usage count if it has at least one
+structural issue from `dependency-check`, otherwise `0` -- heavy use of a
+correctly-declared dependency isn't the problem this feature targets,
+only heavy use *combined with* an existing structural inconsistency is.
+Results are sorted by `risk_score` descending, so the top of the list is
+the highest-priority dependency to look at first; a heavily-imported but
+cleanly-declared package still appears in the report (for visibility) but
+always at `risk_score = 0`, and a barely-used package with a real
+structural issue ranks above it only if its own score is higher.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to analyze (default `.`) |
+| `--config PATH` | Explicit config file (for `exclude`) |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
+| `--top N` | Max number of packages to report (default 25) |
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 

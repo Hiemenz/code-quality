@@ -6,14 +6,9 @@ these checks are otherwise fully part of the same AST-based analysis pass.
 """
 
 import ast
-import re
 
 from codequality.analyzers.base import Issue
-
-_SECRET_NAME_RE = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|access[_-]?key)", re.IGNORECASE)
-_SECRET_PLACEHOLDER_RE = re.compile(
-    r"^(|changeme|xxx+|todo|<.*>|\.\.\.|example|test|dummy|fake|placeholder)$", re.IGNORECASE
-)
+from codequality.analyzers.secrets import SECRET_NAME_RE, is_placeholder
 
 _SHELL_CALLS = {"subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_call",
                 "subprocess.check_output"}
@@ -91,11 +86,11 @@ def _hardcoded_secret_issue(node, path):
     if not (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
         return None
     name = node.targets[0].id
-    if not _SECRET_NAME_RE.search(name):
+    if not SECRET_NAME_RE.search(name):
         return None
     if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
         return None
-    if _SECRET_PLACEHOLDER_RE.match(node.value.value.strip()):
+    if is_placeholder(node.value.value):
         return None
     return Issue(path, node.lineno, "security", "error", "hardcoded-secret",
                  f"'{name}' looks like a hardcoded secret")

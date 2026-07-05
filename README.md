@@ -172,6 +172,10 @@ codequality hotspots .
 # flagged in either direction (see "Environment variable drift" below)
 codequality env-check .
 
+# Secrets that were ever committed, even if a later commit deleted the
+# line -- deleting a line doesn't remove it from git's history
+codequality history-secrets .
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -201,13 +205,15 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Seventeen more subcommands, each documented in its own section below:
+Eighteen more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ownership`,
 `codequality todo-age`, `codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`,
 `codequality dependency-check`, `codequality env-check`,
+`codequality history-secrets` (secrets that were ever committed, even if
+since removed — see [Secrets in git history](#secrets-in-git-history)),
 `codequality hotspots` (complexity crossed with change frequency — see
 [Hotspots](#hotspots-complexity-x-change-frequency)), and
 `codequality api-diff` (public API comparison between any two git refs —
@@ -450,6 +456,64 @@ Exit code: `1` if any issue was found (breaking change or removed file),
 `0` if the API is unchanged between the two refs, `2` on a git/usage error
 (e.g. a ref that doesn't resolve) — so it doubles as a CI gate for
 "did this release break the public API" between two tags.
+
+## Secrets in git history
+
+```bash
+codequality history-secrets .
+codequality history-secrets . --since v1.0 --format json
+codequality history-secrets . --all-commits   # scan full history, not just the most recent 500 commits
+```
+
+The Security category's `hardcoded-secret` check (above) only ever looks at
+the current working tree — `scan`/`diff` parse the files as they exist
+*right now*. That misses the actually dangerous case: a secret that was
+committed and later deleted from the file is still sitting in one of git's
+historical blobs forever, reachable by anyone who has (or ever clones) the
+repo, unless it was scrubbed with something like `git filter-repo`/BFG.
+Deleting the line only removes it from `HEAD`, not from history — most
+people assume it does.
+
+`history-secrets` walks commits (newest-first), diffs each one against its
+first parent, and runs the *exact same* secret-detection pattern the
+generic per-language analyzer uses (`codequality.analyzers.secrets` — one
+shared module, imported by both the AST-based Python check and the
+line-level regex check for every other language, so the two never drift
+out of sync) against only the lines that commit *added*. For every hit, it
+also checks whether that same secret value still appears in the file at
+`HEAD`:
+
+- **still in `HEAD`** — also caught by a normal `scan`; reported here for
+  completeness.
+- **removed from `HEAD` but still in history** — the headline finding of
+  this whole feature: gone from the working tree today, but still fetchable
+  from an old commit by anyone with clone access. Reported distinctly, and
+  listed first in the text report.
+
+Matched secrets are redacted in the report (first/last few characters
+only, e.g. `sk-e...-key`) — never the full value, even though it's already
+sitting in history regardless of what this tool prints.
+
+Walking every commit in a large repo's full history means one `git diff` /
+`git show` subprocess call per commit touched, which can be slow on a repo
+with tens of thousands of commits. `--max-commits` bounds the walk to the
+N most recent commits (default 500); pass `--all-commits` to scan
+everything instead. `--since REF` bounds it to commits reachable from
+`HEAD` but not from `REF` (a `git log REF..HEAD` range) — note this is a
+git ref/tag/sha, unlike the date-string `--since` accepted by
+`churn`/`edit-distance`/`commit-lint`.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Git repo root to scan (default `.`) |
+| `--since REF` | Only walk commits reachable from HEAD but not from this ref |
+| `--max-commits N` | Cap on how many of the most recent commits to walk (default 500) |
+| `--all-commits` | Scan the entire history instead of capping at `--max-commits` |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+Exit code: `1` if any hardcoded-secret-looking line was found (in history
+or still at `HEAD`), `0` if none were, `2` on a git/usage error.
 
 ## Suppressing false positives
 

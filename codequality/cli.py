@@ -5,8 +5,8 @@ import sys
 
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
-    edit_distance, flakiness, hallucination_metrics, hotspots, mutation, ownership, pipeline, property_scaffold,
-    todo_age,
+    edit_distance, env_check, flakiness, hallucination_metrics, hotspots, mutation, ownership, pipeline,
+    property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -347,6 +347,18 @@ def _add_hotspots_subparser(sub):
     hotspots_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_env_check_subparser(sub):
+    env_p = sub.add_parser(
+        "env-check",
+        help="Compare env vars actually referenced in code against what's documented in .env.example/README.md"
+    )
+    env_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to check (default: .)")
+    env_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    env_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    env_p.add_argument("--format", choices=["text", "json"], default="text")
+    env_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -372,6 +384,7 @@ def build_parser():
     _add_hotspots_subparser(sub)
     _add_ownership_subparser(sub)
     _add_todo_age_subparser(sub)
+    _add_env_check_subparser(sub)
 
     return parser
 
@@ -764,6 +777,22 @@ def cmd_todo_age(args):
     return 0
 
 
+def cmd_env_check(args):
+    """Handle `codequality env-check`: env vars referenced in code vs. env
+    vars documented in .env.example/README.md, flagged in either
+    direction -- see codequality/env_check.py.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    issues = env_check.check(root, config)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = env_check.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -783,6 +812,7 @@ _COMMANDS = {
     "hotspots": cmd_hotspots,
     "ownership": cmd_ownership,
     "todo-age": cmd_todo_age,
+    "env-check": cmd_env_check,
 }
 
 

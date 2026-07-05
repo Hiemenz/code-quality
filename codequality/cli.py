@@ -4,9 +4,9 @@ import os
 import sys
 
 from codequality import (
-    __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
-    edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation,
-    ownership, pipeline, property_scaffold, todo_age,
+    __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend,
+    dependency_check, edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots,
+    large_files, mutation, ownership, pipeline, property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -318,6 +318,33 @@ def _add_todo_age_subparser(sub):
     todo_age_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_ai_report_subparser(sub):
+    ai_report_p = sub.add_parser(
+        "ai-report",
+        help="One dashboard rolling up churn/edit-distance/commit-lint/hallucination-rate: AI-assisted vs. human"
+    )
+    ai_report_p.add_argument("path", nargs="?", default=".", help="Git repo root (default: .)")
+    ai_report_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    ai_report_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    ai_report_p.add_argument(
+        "--marker", default=ai_report.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted (default: "{ai_report.DEFAULT_MARKER}")'
+    )
+    ai_report_p.add_argument(
+        "--since", default=None, help="Only consider commits since this date/ref (git --since syntax)"
+    )
+    ai_report_p.add_argument(
+        "--check-imports", action="store_true",
+        help="Also roll up the hallucination-rate row via unresolved-import findings (opt-in; see README)"
+    )
+    ai_report_p.add_argument(
+        "--check-types", action="store_true",
+        help="Also roll up the hallucination-rate row via mypy findings (opt-in; requires codequality[types])"
+    )
+    ai_report_p.add_argument("--format", choices=["text", "json"], default="text")
+    ai_report_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_dependency_check_subparser(sub):
     dep_p = sub.add_parser(
         "dependency-check",
@@ -429,6 +456,7 @@ def build_parser():
     _add_env_check_subparser(sub)
     _add_history_secrets_subparser(sub)
     _add_large_files_subparser(sub)
+    _add_ai_report_subparser(sub)
 
     return parser
 
@@ -877,6 +905,27 @@ def cmd_history_secrets(args):
     return 1 if hits else 0
 
 
+def cmd_ai_report(args):
+    """Handle `codequality ai-report`: one dashboard rolling up churn,
+    edit-distance, commit-lint, and (opt-in) hallucination-rate --
+    a pure aggregation of those four existing AI-vs-human metrics, no new
+    detection logic of its own (see codequality/ai_report.py).
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    config = _load_config(args, root)
+    try:
+        result = ai_report.compute(root, config, marker=args.marker, since=args.since)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(result, indent=2) if args.format == "json" else ai_report.render_text(result)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -899,6 +948,7 @@ _COMMANDS = {
     "env-check": cmd_env_check,
     "history-secrets": cmd_history_secrets,
     "large-files": cmd_large_files,
+    "ai-report": cmd_ai_report,
 }
 
 

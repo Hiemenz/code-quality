@@ -8,8 +8,8 @@ import os
 
 from codequality import coverage_check, generated_code, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, dead_code, doc_examples, duplication, generic_analyzer, python_analyzer, scope_check,
-    signature_diff, treesitter_analyzer,
+    circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, python_analyzer,
+    scope_check, signature_diff, treesitter_analyzer,
 )
 from codequality.analyzers.base import FileMetrics
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
@@ -242,6 +242,25 @@ def _apply_signature_diff(root, metrics_by_path, base):
         fm.issues.extend(signature_diff.signature_diff_issues(old_source, new_source, rel_path))
 
 
+def _apply_complexity_regression(root, metrics_by_path, base):
+    """Compare each changed Python file's old (at `base`) vs. new per-function
+    cyclomatic complexity, flagging functions that got significantly more
+    complex. Diff-only, always-on -- pure AST comparison via
+    analyzers/complexity_regression.py, same precedent as
+    _apply_signature_diff above (and shares the same `base` ref).
+    """
+    if base is None:
+        return
+    for rel_path, fm in metrics_by_path.items():
+        if fm.language != "python":
+            continue
+        old_source = git_utils.get_file_at_ref(base, rel_path, root)
+        new_source = _read_source(root, rel_path)
+        if new_source is None:
+            continue
+        fm.issues.extend(complexity_regression.compare_functions(old_source, new_source, rel_path))
+
+
 def _apply_scope_check(metrics_by_path, task_description):
     """Flag changed files that share no keyword with `task_description`
     while another changed file elsewhere does -- see analyzers/scope_check.py.
@@ -285,8 +304,9 @@ def scan_changed(root, config, changed_files, base=None, task_description=None):
     structure/style checks grade the changed logic, not the whole file.
 
     `base`, when given, is the git ref being diffed against -- it's what
-    lets signature-diff (and, opt-in, behavior-diff) fetch each changed
-    file's *old* content to compare against.
+    lets signature-diff and complexity-regression (and, opt-in,
+    behavior-diff) fetch each changed file's *old* content to compare
+    against.
 
     `task_description`, when given, feeds the scope-mismatch check (see
     analyzers/scope_check.py) -- typically the commit subject.
@@ -308,5 +328,6 @@ def scan_changed(root, config, changed_files, base=None, task_description=None):
     _apply_type_checking(root, config, metrics_by_path, changed_files=changed_files)
     _apply_coverage(root, config, metrics_by_path, changed_files=changed_files)
     _apply_signature_diff(root, metrics_by_path, base)
+    _apply_complexity_regression(root, metrics_by_path, base)
     _apply_scope_check(metrics_by_path, task_description)
     return metrics

@@ -110,6 +110,11 @@ codequality scan . --format sarif --output results.sarif
 codequality scan . --record-history history.jsonl
 codequality trend history.jsonl
 
+# Track per-function cyclomatic complexity over time, then see which
+# functions have been quietly getting more complex
+codequality complexity-trend snapshot . -o complexity-history.jsonl
+codequality complexity-trend show complexity-history.jsonl
+
 # Snapshot current issues, then gate only on issues beyond that snapshot
 codequality baseline .
 codequality scan . --baseline .codequality-baseline.json --fail-under 70
@@ -165,12 +170,13 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Seven more subcommands, each documented in its own section below:
+Eight more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality hallucination-rate`,
-`codequality scaffold-properties`, and `codequality pipeline`. Plus
-`codequality mutation`, which is deliberately separate from everything
-else — see [Mutation testing](#mutation-testing).
+`codequality scaffold-properties`, `codequality pipeline`, and
+`codequality complexity-trend`. Plus `codequality mutation`, which is
+deliberately separate from everything else — see
+[Mutation testing](#mutation-testing).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -636,6 +642,54 @@ the repo (add a step to your main-branch workflow that commits the updated
 `codequality-history.jsonl`) — it's a small, append-only file, so `git log`
 on it doubles as an audit trail, and `trend` works the same whether you run
 it in CI or locally.
+
+## Per-function complexity trend
+
+```bash
+codequality complexity-trend snapshot . -o complexity-history.jsonl
+codequality complexity-trend show complexity-history.jsonl
+codequality complexity-trend show complexity-history.jsonl --top 10 --format json
+```
+
+`scan --record-history`/`trend` (above) track one number over time: the
+overall repo score. `complexity-trend` tracks a finer-grained one: the
+cyclomatic complexity of every individual function (the same per-function
+number the Complexity category is already scored from -- see
+`codequality/analyzers/base.py`'s `FunctionMetrics.complexity`), so you can
+see *which* functions have been quietly getting more complex, not just
+that the overall score moved.
+
+It's two subcommands, meant to be run repeatedly over time the same way
+`--record-history` is -- typically once per CI run on your main branch:
+
+- **`complexity-trend snapshot [path] -o FILE`** runs a normal scan and
+  appends one JSON line to `FILE`, recording every function's current
+  complexity (keyed `path::function_name`) plus a timestamp and the
+  current git commit sha. `FILE` is created if it doesn't exist yet, and
+  each run appends -- never overwrites -- so `FILE` accumulates one line
+  per run, the same append-only shape as `--record-history`'s file (but
+  its own separate file; the two are not interchangeable).
+- **`complexity-trend show FILE [--top N] [--format text|json]`** reads
+  every snapshot back, compares the *earliest* and *most recent* one, and
+  reports every function present in both -- sorted by biggest complexity
+  increase first, which is the actionable part: the top of that list is
+  "these functions have been getting more complex over time and are
+  worth a look." A function that only shows up in one of the two
+  snapshots (new or deleted since) is left out, since there's no
+  before/after to compare. `--top` caps how many rows are shown (default
+  25). Fewer than two snapshots in `FILE` just produces an empty report,
+  not an error.
+
+Like `codequality-history.jsonl`, the cheapest way to persist the snapshot
+file across CI runs is to commit it to the repo from a main-branch
+workflow step.
+
+This is a fully self-contained feature -- its own module
+(`codequality/complexity_trend.py`), its own snapshot file format, and its
+own subcommand. It shares no code or storage with `scan
+--record-history`/`codequality trend` (overall score history) or with any
+test-to-code-ratio tracking; each of those is a separate timeline over a
+separate JSONL file.
 
 ## Development
 

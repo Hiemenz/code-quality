@@ -52,9 +52,22 @@ def _strategy_for(annotation):
     return strategy, True
 
 
-def _is_test_file(rel_path):
+def is_test_file(rel_path):
+    """Classify a file as a test file by filename convention (`test_*.py`,
+    `*_test.py`) or by living under a `tests/`/`test/` directory. This is
+    the one place that convention is defined -- reused by report.py's
+    test/source LOC split so "what counts as a test file" stays consistent
+    across the tool instead of being redefined per feature.
+    """
     base = os.path.basename(rel_path)
-    return base.startswith("test_") or base.endswith("_test.py")
+    if base.startswith("test_") or base.endswith("_test.py"):
+        return True
+    dirs = os.path.normpath(rel_path).split(os.sep)[:-1]
+    return "tests" in dirs or "test" in dirs
+
+
+# Backwards-compatible alias for the old private name.
+_is_test_file = is_test_file
 
 
 def _uses_hypothesis_given(node):

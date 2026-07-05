@@ -6,6 +6,7 @@ as a PR comment).
 import json
 from datetime import datetime, timezone
 
+from codequality.property_scaffold import is_test_file
 from codequality.scorer import score_single_file
 
 _SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
@@ -42,6 +43,9 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
     total_functions = sum(len(fm.functions) for fm in file_metrics_list)
     total_loc = sum(fm.loc for fm in file_metrics_list)
     total_suppressed = sum(fm.suppressed_count for fm in file_metrics_list)
+    test_loc = sum(fm.loc for fm in file_metrics_list if is_test_file(fm.path))
+    source_loc = total_loc - test_loc
+    test_ratio = (test_loc / source_loc) if source_loc else None
     passed = score_result.overall >= fail_under if fail_under is not None else True
 
     return {
@@ -60,6 +64,9 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
             "functions": total_functions,
             "issues": len(issues),
             "suppressed": total_suppressed,
+            "test_loc": test_loc,
+            "source_loc": source_loc,
+            "test_ratio": test_ratio,
         },
         "worst_files": [{"path": p, "score": s, "lines": n} for p, s, n in _worst_files(file_metrics_list)],
         "issues": [i.to_dict() for i in issues],

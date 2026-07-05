@@ -142,6 +142,10 @@ codequality commit-lint .
 # blame) to AI-assisted vs. human commits, per 1,000 lines?
 codequality hallucination-rate . --check-imports --check-types
 
+# Per-file bus factor: who (or what share of one git identity) owns each
+# file's current lines, plus what fraction trace to an AI-assisted commit
+codequality ownership .
+
 # Does the test suite pass reliably, or does a test's result depend on
 # luck? (opt-in, runs your test suite N times -- can be slow)
 codequality flakiness .
@@ -189,16 +193,16 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Fourteen more subcommands, each documented in its own section below:
+Fifteen more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
-`codequality hallucination-rate`, `codequality scaffold-properties`,
-`codequality pipeline`, `codequality complexity-trend`,
-`codequality dependency-check`, `codequality hotspots` (complexity crossed
-with change frequency — see
+`codequality hallucination-rate`, `codequality ownership`,
+`codequality scaffold-properties`, `codequality pipeline`,
+`codequality complexity-trend`, `codequality dependency-check`,
+`codequality hotspots` (complexity crossed with change frequency — see
 [Hotspots](#hotspots-complexity-x-change-frequency)), and
-`codequality api-diff` (public API
-comparison between any two git refs — see
+`codequality api-diff` (public API comparison between any two git refs —
+see
 [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
 Plus `codequality mutation` and `codequality flakiness`, which are
 deliberately separate from everything else — see
@@ -653,6 +657,53 @@ tool has that most directly catch LLM hallucination. Requires at least
 one of `--check-imports`/`--check-types` (that's what produces the
 findings being rolled up); `--check-types` additionally needs
 `pip install codequality[types]`.
+
+## Ownership / bus factor
+
+```bash
+codequality ownership .
+codequality ownership . --marker "Generated-By: MyBot" --threshold 0.8
+```
+
+`hallucination-rate` attributes specific *findings* to AI vs. human via
+`git blame`; `ownership` uses the same blame-driven attribution but asks a
+plainer per-file question, with no findings required: for every file,
+who currently owns its lines, and how much of it came from an AI-assisted
+commit? For each scanned, git-tracked file it runs `git blame
+--line-porcelain -w HEAD` (same technique as `edit-distance`'s blame pass)
+and reports two deliberately separate signals:
+
+- **`top_author_share`** — of the file's current lines, the share owned
+  by its single largest-contributing git identity (author name + email).
+  This is the bus-factor signal: a file where one identity owns 90%+ of
+  the lines (the default `--threshold`) is flagged `low-bus-factor` — a
+  risk if that person leaves, or, read the other way, "one clean file
+  nobody has needed to touch since it was written."
+- **`ai_line_fraction`** — of the file's current lines, the fraction last
+  touched by a commit whose message matches the AI marker (same
+  `--marker` convention as `churn`/`edit-distance`/`commit-lint`/
+  `hallucination-rate`, default `"Co-Authored-By: Claude"`,
+  case-insensitive).
+
+These two are kept as separate columns rather than folded into one,
+deliberately: authorship is tracked per-*commit* (an AI-assisted commit's
+author is still a human's git identity, just one who had help), while
+concentration is tracked per-*identity*. A file whose top contributing
+identity happens to be AI-marked doesn't make "top author" itself an AI —
+conflating the two would misreport both. `low_bus_factor` is
+informational/reporting only, like `churn`/`edit-distance`/
+`hallucination-rate`/`dependency-check` — there's no pass/fail gate here.
+
+The text report is a table sorted by `top_author_share` descending, with
+`ai_line_fraction` shown as its own column rather than a second sort key.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to analyze (default `.`) |
+| `--marker` | Substring marking a commit AI-assisted (default `"Co-Authored-By: Claude"`) |
+| `--threshold` | Single-identity line share at/above which a file is flagged `low-bus-factor` (default `0.9`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
 
 ## Property-based test scaffolding
 

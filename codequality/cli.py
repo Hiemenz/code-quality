@@ -5,7 +5,7 @@ import sys
 
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
-    edit_distance, flakiness, hallucination_metrics, hotspots, mutation, pipeline, property_scaffold,
+    edit_distance, flakiness, hallucination_metrics, hotspots, mutation, ownership, pipeline, property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -279,6 +279,26 @@ def _add_hallucination_rate_subparser(sub):
     hall_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_ownership_subparser(sub):
+    ownership_p = sub.add_parser(
+        "ownership",
+        help="Per-file author concentration (bus factor) plus the fraction of each file's lines "
+             "that trace to an AI-assisted commit"
+    )
+    ownership_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
+    ownership_p.add_argument(
+        "--marker", default=ownership.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted (default: "{ownership.DEFAULT_MARKER}")'
+    )
+    ownership_p.add_argument(
+        "--threshold", type=float, default=ownership.DEFAULT_THRESHOLD,
+        help=f"Single-identity line share at/above which a file is flagged low-bus-factor "
+             f"(default: {ownership.DEFAULT_THRESHOLD})"
+    )
+    ownership_p.add_argument("--format", choices=["text", "json"], default="text")
+    ownership_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_dependency_check_subparser(sub):
     dep_p = sub.add_parser(
         "dependency-check",
@@ -331,6 +351,7 @@ def build_parser():
     _add_api_diff_subparser(sub)
     _add_dependency_check_subparser(sub)
     _add_hotspots_subparser(sub)
+    _add_ownership_subparser(sub)
 
     return parser
 
@@ -682,6 +703,25 @@ def cmd_hotspots(args):
     return 0
 
 
+def cmd_ownership(args):
+    """Handle `codequality ownership`: per-file single-identity line
+    concentration (bus factor) plus AI-assisted line fraction, both via
+    `git blame`.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        entries = ownership.compute(root, marker=args.marker, threshold=args.threshold)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(entries, indent=2) if args.format == "json" else ownership.render_text(entries, args.threshold)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -699,6 +739,7 @@ _COMMANDS = {
     "api-diff": cmd_api_diff,
     "dependency-check": cmd_dependency_check,
     "hotspots": cmd_hotspots,
+    "ownership": cmd_ownership,
 }
 
 

@@ -6,6 +6,7 @@ import sys
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
     edit_distance, flakiness, hallucination_metrics, hotspots, mutation, ownership, pipeline, property_scaffold,
+    todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -299,6 +300,24 @@ def _add_ownership_subparser(sub):
     ownership_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_todo_age_subparser(sub):
+    todo_age_p = sub.add_parser(
+        "todo-age",
+        help="Age every TODO/FIXME/XXX/HACK marker via git blame, grouped by AI-assisted vs. human commit"
+    )
+    todo_age_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to scan (default: .)")
+    todo_age_p.add_argument(
+        "--marker", default=todo_age.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted (default: "{todo_age.DEFAULT_MARKER}")'
+    )
+    todo_age_p.add_argument(
+        "--stale-days", type=int, default=todo_age.DEFAULT_STALE_DAYS,
+        help=f"Age in days after which a TODO/FIXME is flagged stale (default: {todo_age.DEFAULT_STALE_DAYS})"
+    )
+    todo_age_p.add_argument("--format", choices=["text", "json"], default="text")
+    todo_age_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_dependency_check_subparser(sub):
     dep_p = sub.add_parser(
         "dependency-check",
@@ -352,6 +371,7 @@ def build_parser():
     _add_dependency_check_subparser(sub)
     _add_hotspots_subparser(sub)
     _add_ownership_subparser(sub)
+    _add_todo_age_subparser(sub)
 
     return parser
 
@@ -722,6 +742,28 @@ def cmd_ownership(args):
     return 0
 
 
+def cmd_todo_age(args):
+    """Handle `codequality todo-age`: age every TODO/FIXME/XXX/HACK marker
+    via git blame, grouped by AI-assisted vs. human introducing commit.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        todos = todo_age.compute(root, marker=args.marker, stale_days=args.stale_days)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    if args.format == "json":
+        groups = todo_age.summarize(todos)
+        text = json.dumps({"ai": groups["ai"], "human": groups["human"], "todos": todos}, indent=2)
+    else:
+        text = todo_age.render_text(todos, args.stale_days)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -740,6 +782,7 @@ _COMMANDS = {
     "dependency-check": cmd_dependency_check,
     "hotspots": cmd_hotspots,
     "ownership": cmd_ownership,
+    "todo-age": cmd_todo_age,
 }
 
 

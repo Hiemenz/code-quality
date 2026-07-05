@@ -191,7 +191,7 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Category | Default weight | What it measures |
 |---|---|---|
 | Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
-| Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file) |
+| Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, plus stale docstrings that document a removed parameter |
 | Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
@@ -213,11 +213,12 @@ function. See `codequality/scorer.py` for the exact formulas; they're
 simple arithmetic on purpose, not a black box.
 
 Python-only checks (no equivalent yet for other languages): unused
-imports/variables, `pickle`/`yaml.load` deserialization checks,
-assertion-free tests, broad exception-swallowing, stale-docstring
-parameters, unreachable code, and circular imports. Hardcoded-secret and `eval`/`exec`
-detection run for every language via a line-level regex. Function-naming
-convention checks run for Python and, when the `tree-sitter` extra is
+imports/variables, cross-file dead-code detection, `pickle`/`yaml.load`
+deserialization checks, assertion-free tests, broad exception-swallowing,
+stale-docstring parameters, unreachable code, and circular imports.
+Hardcoded-secret and `eval`/`exec` detection run for every language via a
+line-level regex. Function-naming convention checks run for Python and,
+when the `tree-sitter` extra is
 installed, for JS/TS/Java/C#/Go/Ruby/Rust/Kotlin/Swift/Scala too — each
 checked against that language's own convention (e.g. `camelCase` for
 JS/Java, `snake_case` for Ruby/Rust, `PascalCase` for C#), with
@@ -250,6 +251,35 @@ looking tidy:
   `return`/`raise`/`continue`/`break` in the same block. Occasionally
   shows up in LLM output as a leftover branch after code that already
   unconditionally exits it.
+
+### Cross-file dead code
+
+The `unused-import`/`unused-variable` checks above only ever look at one
+file at a time. `scan` (full repo only — there's no "rest of the repo" to
+check against in `diff` mode, same reasoning as duplication below) also
+runs a whole-project version of that idea: a public top-level function or
+class, defined in one file, whose name never occurs — as a whole word,
+anywhere, excluding its own definition line — in any other scanned file's
+source, is flagged as **`dead-code`**.
+
+This is intentionally a blunt, text-level check (no import/scope
+resolution, same "no cleverness, just reproducibility" tradeoff every
+other analyzer here makes), so it's reported at `info` severity under the
+Structure category without affecting that category's score — a heuristic
+signal to look at, not something that should fail a build on its own.
+False positives are expected (e.g. a name only ever reached via
+`getattr`/reflection); the checks below rule out the common, obvious
+ones:
+
+- names in a module's `__all__`;
+- dunder methods, and the conventional `main()` script entry point;
+- pytest/unittest hooks discovered by name/convention rather than direct
+  reference: `test_*` functions, `setUp`/`tearDown` (and the `Class`/
+  `Module` variants), and `Test*`-prefixed classes;
+- anything decorated — a decorator often means external dispatch (a
+  Flask route, a plugin registry, a CLI command) that a text search can't
+  see, so decorated functions/classes are skipped entirely rather than
+  guessed at.
 
 ### Language support
 

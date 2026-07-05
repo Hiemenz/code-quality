@@ -8,7 +8,7 @@ import os
 
 from codequality import coverage_check, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, duplication, generic_analyzer, python_analyzer, scope_check, signature_diff,
+    circular_imports, dead_code, duplication, generic_analyzer, python_analyzer, scope_check, signature_diff,
     treesitter_analyzer,
 )
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
@@ -87,6 +87,17 @@ def _apply_duplication(root, file_metrics_by_path):
             fm.duplicate_lines = len(idx_set)
 
 
+def _python_file_sources(root, metrics_by_path):
+    file_sources = {}
+    for rel_path, fm in metrics_by_path.items():
+        if fm.language != "python":
+            continue
+        source = _read_source(root, rel_path)
+        if source is not None:
+            file_sources[rel_path] = source
+    return file_sources
+
+
 def _apply_circular_imports(root, metrics_by_path):
     """Whole-graph property, but scoped to whatever's actually in
     `metrics_by_path` -- same shape as `_apply_duplication`. In `diff` mode
@@ -95,17 +106,25 @@ def _apply_circular_imports(root, metrics_by_path):
     narrowing (duplication is scoped the same way) rather than re-walking
     the whole repo on every diff.
     """
-    file_sources = {}
-    for rel_path, fm in metrics_by_path.items():
-        if fm.language != "python":
-            continue
-        source = _read_source(root, rel_path)
-        if source is not None:
-            file_sources[rel_path] = source
+    file_sources = _python_file_sources(root, metrics_by_path)
     for issue in circular_imports.circular_import_issues(file_sources):
         fm = metrics_by_path.get(issue.file)
         if fm is not None:
             fm.issues.append(issue)
+
+
+def _apply_dead_code(root, metrics_by_path):
+    """Cross-file dead-code detection: needs every Python file's source at
+    once to know whether a top-level function/class is referenced
+    *anywhere* in the repo, so -- like duplication -- this only makes
+    sense on a full scan, never a diff (a diff has no view of the rest of
+    the repo to check references against).
+    """
+    file_sources = _python_file_sources(root, metrics_by_path)
+    for rel_path, issues in dead_code.find_dead_code(file_sources).items():
+        fm = metrics_by_path.get(rel_path)
+        if fm is not None:
+            fm.issues.extend(issues)
 
 
 def _apply_type_checking(root, config, metrics_by_path, changed_files=None):
@@ -192,6 +211,7 @@ def scan_repo(root, config):
         metrics_by_path[rel_path] = fm
     _apply_duplication(root, metrics_by_path)
     _apply_circular_imports(root, metrics_by_path)
+    _apply_dead_code(root, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path)
     _apply_coverage(root, config, metrics_by_path)
     return metrics

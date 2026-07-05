@@ -5,8 +5,8 @@ import sys
 
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
-    edit_distance, env_check, flakiness, hallucination_metrics, hotspots, mutation, ownership, pipeline,
-    property_scaffold, todo_age,
+    edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, mutation, ownership,
+    pipeline, property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -359,6 +359,31 @@ def _add_env_check_subparser(sub):
     env_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_history_secrets_subparser(sub):
+    hs_p = sub.add_parser(
+        "history-secrets",
+        help="Find hardcoded-secret-looking lines ever committed, even if later removed from HEAD "
+             "(a plain scan/diff only ever looks at the current working tree)"
+    )
+    hs_p.add_argument("path", nargs="?", default=".", help="Git repo root to scan (default: .)")
+    hs_p.add_argument(
+        "--since", default=None, metavar="REF",
+        help="Only walk commits reachable from HEAD but not from this ref (git 'REF..HEAD' range). "
+             "Unlike other subcommands' date-based --since, this is a git ref/tag/sha."
+    )
+    hs_p.add_argument(
+        "--max-commits", type=int, default=history_secrets.DEFAULT_MAX_COMMITS,
+        help=f"Cap on how many of the most recent commits to walk (default: {history_secrets.DEFAULT_MAX_COMMITS}) "
+             "-- diffing every commit in a large repo's full history can be slow"
+    )
+    hs_p.add_argument(
+        "--all-commits", action="store_true",
+        help="Scan the entire history instead of capping at --max-commits"
+    )
+    hs_p.add_argument("--format", choices=["text", "json"], default="text")
+    hs_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -385,6 +410,7 @@ def build_parser():
     _add_ownership_subparser(sub)
     _add_todo_age_subparser(sub)
     _add_env_check_subparser(sub)
+    _add_history_secrets_subparser(sub)
 
     return parser
 
@@ -793,6 +819,27 @@ def cmd_env_check(args):
     return 0
 
 
+def cmd_history_secrets(args):
+    """Handle `codequality history-secrets`: hardcoded-secret-looking lines
+    ever added by any commit, including ones since removed from HEAD --
+    the case a plain scan/diff can never catch since both only look at the
+    current working tree.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    max_commits = None if args.all_commits else args.max_commits
+    try:
+        hits = history_secrets.scan(root, since=args.since, max_commits=max_commits)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(hits, indent=2) if args.format == "json" else history_secrets.render_text(hits)
+    _emit(text, args.output)
+    return 1 if hits else 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -813,6 +860,7 @@ _COMMANDS = {
     "ownership": cmd_ownership,
     "todo-age": cmd_todo_age,
     "env-check": cmd_env_check,
+    "history-secrets": cmd_history_secrets,
 }
 
 

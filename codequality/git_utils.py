@@ -10,6 +10,11 @@ class GitError(RuntimeError):
     pass
 
 
+# git's well-known hash for the empty tree -- constant across every repo,
+# used to diff a root commit (no parent) against "nothing."
+EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
 def _run(args, cwd):
     result = subprocess.run(
         ["git"] + args, cwd=cwd, capture_output=True, text=True
@@ -49,6 +54,18 @@ def get_diff_text(base, head, cwd):
     else:
         args = ["diff", base, "-U0", "--no-color"]
     return _run(args, cwd)
+
+
+def diff_text_for_commit(cwd, sha):
+    """Unified diff of `sha` against its first parent, `-U0` (no context
+    lines -- callers only care which lines were added/removed). Falls back
+    to diffing against git's empty-tree sha for a root commit, which has no
+    parent to diff against.
+    """
+    try:
+        return _run(["diff", f"{sha}^", sha, "-U0", "--no-color"], cwd)
+    except GitError:
+        return _run(["diff", EMPTY_TREE_SHA, sha, "-U0", "--no-color"], cwd)
 
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")

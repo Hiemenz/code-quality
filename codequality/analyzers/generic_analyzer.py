@@ -11,6 +11,7 @@ path -- see README for the roadmap on closing this gap.
 import re
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue
+from codequality.analyzers.secrets import SECRET_ASSIGN_RE, is_placeholder
 
 TODO_RE = re.compile(r"(//|#|/\*)\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
 
@@ -35,12 +36,6 @@ DECISION_KEYWORDS = re.compile(
 )
 
 _EVAL_RE = re.compile(r"\b(eval|exec)\s*\(")
-_SECRET_ASSIGN_RE = re.compile(
-    r"(?i)\b(pass(word|wd)?|secret|token|api[_-]?key|access[_-]?key)\b\s*[:=]\s*[\"']([^\"'\s]+)[\"']"
-)
-_SECRET_PLACEHOLDER_RE = re.compile(
-    r"^(changeme|xxx+|todo|<.*>|\.\.\.|example|test|dummy|fake|placeholder)$", re.IGNORECASE
-)
 
 
 def _security_line_issues(path, i, stripped):
@@ -49,8 +44,8 @@ def _security_line_issues(path, i, stripped):
         issues.append(
             Issue(path, i, "security", "warn", "dangerous-eval", "Use of eval()/exec() can execute arbitrary code")
         )
-    m = _SECRET_ASSIGN_RE.search(stripped)
-    if m and not _SECRET_PLACEHOLDER_RE.match(m.group(3)):
+    m = SECRET_ASSIGN_RE.search(stripped)
+    if m and not is_placeholder(m.group(3)):
         issues.append(
             Issue(path, i, "security", "error", "hardcoded-secret", f"'{m.group(1)}' looks like a hardcoded secret")
         )

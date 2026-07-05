@@ -4,9 +4,9 @@ import os
 import sys
 
 from codequality import (
-    __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend,
-    dependency_check, edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots,
-    large_files, mutation, ownership, pipeline, property_scaffold, todo_age,
+    __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_coverage_risk,
+    complexity_trend, dependency_check, edit_distance, env_check, flakiness, hallucination_metrics,
+    history_secrets, hotspots, large_files, mutation, ownership, pipeline, property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -374,6 +374,20 @@ def _add_hotspots_subparser(sub):
     hotspots_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_complexity_coverage_risk_subparser(sub):
+    ccr_p = sub.add_parser(
+        "complexity-coverage-risk",
+        help="Rank files by complexity x whether a matching test file exists at all -- what to test first"
+    )
+    ccr_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
+    ccr_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    ccr_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    ccr_p.add_argument("--no-generic", action="store_true", help="Only analyze Python files")
+    ccr_p.add_argument("--top", type=int, default=25, help="Max number of files to report (default: 25)")
+    ccr_p.add_argument("--format", choices=["text", "json"], default="text")
+    ccr_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_env_check_subparser(sub):
     env_p = sub.add_parser(
         "env-check",
@@ -451,6 +465,7 @@ def build_parser():
     _add_api_diff_subparser(sub)
     _add_dependency_check_subparser(sub)
     _add_hotspots_subparser(sub)
+    _add_complexity_coverage_risk_subparser(sub)
     _add_ownership_subparser(sub)
     _add_todo_age_subparser(sub)
     _add_env_check_subparser(sub)
@@ -827,6 +842,23 @@ def cmd_hotspots(args):
     return 0
 
 
+def cmd_complexity_coverage_risk(args):
+    """Handle `codequality complexity-coverage-risk`: cross per-file
+    complexity with whether a matching test file exists at all (see
+    codequality/complexity_coverage_risk.py) to rank files by what's most
+    worth writing a test for first.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    rows = complexity_coverage_risk.compute(root, config)
+    if args.format == "json":
+        text = json.dumps(rows[: args.top], indent=2)
+    else:
+        text = complexity_coverage_risk.render_text(rows, top_n=args.top)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_ownership(args):
     """Handle `codequality ownership`: per-file single-identity line
     concentration (bus factor) plus AI-assisted line fraction, both via
@@ -943,6 +975,7 @@ _COMMANDS = {
     "api-diff": cmd_api_diff,
     "dependency-check": cmd_dependency_check,
     "hotspots": cmd_hotspots,
+    "complexity-coverage-risk": cmd_complexity_coverage_risk,
     "ownership": cmd_ownership,
     "todo-age": cmd_todo_age,
     "env-check": cmd_env_check,

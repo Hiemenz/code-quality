@@ -183,6 +183,10 @@ codequality large-files . --max-size-mb 5
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
+
+# One dashboard: churn + edit-distance + commit-lint + hallucination-rate,
+# AI-assisted vs. human, side by side (see "AI code quality report" below)
+codequality ai-report . --check-imports --check-types
 ```
 
 `scan` and `diff` share the same flags:
@@ -209,11 +213,12 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Nineteen more subcommands, each documented in its own section below:
+Twenty more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
-`codequality hallucination-rate`, `codequality ownership`,
-`codequality todo-age`, `codequality scaffold-properties`,
+`codequality hallucination-rate`, `codequality ai-report`,
+`codequality ownership`, `codequality todo-age`,
+`codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`,
 `codequality dependency-check`, `codequality env-check`,
 `codequality history-secrets` (secrets that were ever committed, even if
@@ -832,6 +837,62 @@ TODOs tend to linger longer than human ones, or get cleaned up sooner, in
 *your* repo's actual history. The text report also lists the stale
 markers themselves (file:line, age, snippet, group), capped and with an
 "...and N more" tail — same convention as `commit-lint`'s failure listing.
+
+## AI code quality report
+
+```bash
+codequality ai-report .
+codequality ai-report . --check-imports --check-types
+codequality ai-report . --marker "Generated-By: MyBot" --since "3 months ago"
+```
+
+The four features above --
+[`churn`](#tracking-ai-vs-human-rework),
+[`edit-distance`](#edit-distance-how-much-of-a-commit-survives-to-head),
+[`commit-lint`](#commit-message-quality), and
+[`hallucination-rate`](#hallucination-rate) -- each already split the same
+git history into AI-assisted vs. human by the same marker-substring
+convention and answer one question apiece. Getting the full picture meant
+running all four and combining the numbers by hand. `codequality ai-report`
+is that combination, done once: a single dashboard with those four metrics
+side by side, AI-assisted vs. human. **It is not a new detection
+technique** -- it calls straight into each module's own `compute()` and
+reshapes the results; every number it prints is traceable to one of the
+four sections linked above.
+
+`hallucination-rate`'s row only appears when at least one of
+`--check-imports`/`--check-types` is passed (the same requirement that
+subcommand has on its own); without either flag, `ai-report` still prints
+the other three rows and notes that the hallucination-rate row was
+skipped and why, rather than erroring out or showing a misleading zero.
+`hallucination-rate` also has no notion of a time window, so combining it
+with `--since` prints a caveat that that one row still covers full
+history while the other three are scoped to `--since`.
+
+Deliberately **no single fabricated "AI code quality score"**: rework rate
+(a fraction of commits), edit distance (a fraction of lines), commit-lint
+pass rate (a fraction of commits by an unrelated rule), and hallucination
+rate (findings per 1,000 lines) are four different units measuring four
+different things. Averaging them into one number would invent a weighting
+that doesn't exist and imply a precision this data doesn't have, so the
+report always shows the four numbers next to each other, clearly labeled,
+and leaves interpretation to the reader.
+
+The report header states how many commits were classified into each
+group. A group with zero AI-marked (or zero human) commits shows `n/a` on
+every metric for that group, not a fake `0%` -- same "an empty group is a
+missing value, not a real zero" rule `churn.py` already follows -- so it's
+easy to tell whether a repo actually has enough AI-marked history yet for
+these numbers to mean anything.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Git repo root (default `.`) |
+| `--marker` | Substring marking a commit AI-assisted (default `"Co-Authored-By: Claude"`) |
+| `--since` | Only consider commits since this date/ref (git `--since` syntax; doesn't affect the hallucination-rate row -- see above) |
+| `--check-imports` / `--check-types` | Same opt-in flags as `hallucination-rate`; gate whether that row runs |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
 
 ## Property-based test scaffolding
 

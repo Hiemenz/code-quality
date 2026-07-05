@@ -5,7 +5,7 @@ import sys
 
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, edit_distance,
-    hallucination_metrics, mutation, pipeline, property_scaffold,
+    flakiness, hallucination_metrics, mutation, pipeline, property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -168,6 +168,25 @@ def _add_mutation_subparser(sub):
     mutation_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_flakiness_subparser(sub):
+    flakiness_p = sub.add_parser(
+        "flakiness",
+        help="Rerun the repo's own test suite multiple times and report tests whose pass/fail result "
+             "isn't stable across runs -- executes the repo's code repeatedly and can be slow"
+    )
+    flakiness_p.add_argument("path", nargs="?", default=".", help="Repo root to test (default: .)")
+    flakiness_p.add_argument(
+        "--runs", type=int, default=flakiness.DEFAULT_RUNS,
+        help=f"Number of times to run the test suite (default: {flakiness.DEFAULT_RUNS})"
+    )
+    flakiness_p.add_argument(
+        "--test-command", default=None,
+        help=f'Command to run, as args after "python -m" (default: "{flakiness.DEFAULT_TEST_COMMAND}")'
+    )
+    flakiness_p.add_argument("--format", choices=["text", "json"], default="text")
+    flakiness_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_pipeline_subparser(sub):
     pipeline_p = sub.add_parser(
         "pipeline",
@@ -276,6 +295,7 @@ def build_parser():
     _add_commit_lint_subparser(sub)
     _add_scaffold_subparser(sub)
     _add_mutation_subparser(sub)
+    _add_flakiness_subparser(sub)
     _add_pipeline_subparser(sub)
     _add_hallucination_rate_subparser(sub)
     _add_complexity_trend_subparser(sub)
@@ -497,6 +517,21 @@ def cmd_mutation(args):
     return 0
 
 
+def cmd_flakiness(args):
+    """Handle `codequality flakiness`: rerun the repo's own test suite
+    --runs times and report tests whose pass/fail/error result isn't
+    stable across runs. Same "runs the target repo's own code" trust
+    boundary as --check-coverage/mutation -- its own explicit subcommand,
+    never folded into scan/diff, and never a required opt-in flag beyond
+    just invoking it.
+    """
+    root = os.path.abspath(args.path)
+    result = flakiness.run(root, test_command=args.test_command, runs=args.runs)
+    text = json.dumps(result, indent=2) if args.format == "json" else flakiness.render_text(result)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_pipeline(args):
     """Handle `codequality pipeline`: run the configured external steps
     (format/lint/test/... -- see the `[pipeline]` config table) in order,
@@ -594,6 +629,7 @@ _COMMANDS = {
     "commit-lint": cmd_commit_lint,
     "scaffold-properties": cmd_scaffold_properties,
     "mutation": cmd_mutation,
+    "flakiness": cmd_flakiness,
     "pipeline": cmd_pipeline,
     "hallucination-rate": cmd_hallucination_rate,
     "complexity-trend": cmd_complexity_trend,

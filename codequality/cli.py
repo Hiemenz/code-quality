@@ -27,6 +27,11 @@ def _add_common_args(p):
     p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
     p.add_argument("--no-generic", action="store_true", help="Only analyze Python files (skip heuristic analyzers)")
     p.add_argument(
+        "--include-generated", action="store_true",
+        help="Score auto-detected generated files too (protobuf, migrations, ... -- see README; "
+             "excluded by default)"
+    )
+    p.add_argument(
         "--baseline", metavar="FILE",
         help="Forgive issues already recorded in this baseline file (see `codequality baseline`)"
     )
@@ -465,6 +470,8 @@ def _load_config(args, root):
     overrides = {"exclude": args.exclude} if args.exclude else {}
     if getattr(args, "no_generic", False):
         overrides["include_generic_languages"] = False
+    if getattr(args, "include_generated", False):
+        overrides["include_generated"] = True
     if getattr(args, "check_imports", False):
         overrides["check_imports"] = True
     if getattr(args, "check_types", False):

@@ -93,6 +93,11 @@ DEFAULT_CONFIG = {
     "check_types": False,
     "check_coverage": False,
     "test_command": "unittest discover -s tests",
+    # Generated files (protobuf `_pb2.py`, migration scripts, OpenAPI client
+    # stubs, ...) are auto-detected (see codequality/generated_code.py) and
+    # excluded from scoring by default, the same way config.exclude globs
+    # are. Set True (or pass --include-generated) to score them anyway.
+    "include_generated": False,
     # External steps (format/lint/test/benchmark/...) that `codequality
     # pipeline` runs before folding its own scan in as one more step --
     # see PipelineStep and codequality/pipeline.py. Empty by default: this
@@ -135,6 +140,7 @@ class Config:
         self.check_types = merged["check_types"]
         self.check_coverage = merged["check_coverage"]
         self.test_command = merged["test_command"]
+        self.include_generated = merged["include_generated"]
         self.pipeline_steps = [PipelineStep(s) for s in merged["pipeline"]["steps"]]
 
     @classmethod

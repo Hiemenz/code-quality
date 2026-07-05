@@ -6,7 +6,7 @@ runs duplicate-block detection across the resulting set.
 import fnmatch
 import os
 
-from codequality import coverage_check, git_utils, suppress, typecheck
+from codequality import coverage_check, generated_code, git_utils, suppress, typecheck
 from codequality.analyzers import (
     circular_imports, dead_code, doc_examples, duplication, generic_analyzer, python_analyzer, scope_check,
     signature_diff, treesitter_analyzer,
@@ -64,9 +64,17 @@ def analyze_file(root, rel_path, language, config, only_lines=None):
     tree-sitter if the optional dependency is installed and supports this
     language, or the line-heuristic fallback otherwise. Applies inline
     `codequality: ignore` suppression to the result either way.
+
+    Returns `None` (same as an unreadable file) for an auto-detected
+    generated file, unless `config.include_generated` opts back in -- see
+    `codequality/generated_code.py`. This is the one place both `scan_repo`
+    and `scan_changed` funnel through, so the exclusion applies identically
+    to a full scan and a diff.
     """
     source = _read_source(root, rel_path)
     if source is None:
+        return None
+    if not config.include_generated and generated_code.is_generated(rel_path, source):
         return None
     fm = _run_analyzer(rel_path, source, language, config, only_lines)
     suppressions = suppress.parse(source)

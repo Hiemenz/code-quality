@@ -5,8 +5,9 @@ import sys
 
 from codequality import (
     __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_coverage_risk,
-    complexity_trend, dependency_check, edit_distance, env_check, flakiness, hallucination_metrics,
-    history_secrets, hotspots, large_files, mutation, ownership, pipeline, property_scaffold, todo_age,
+    complexity_trend, dead_code_confidence, dependency_check, edit_distance, env_check, flakiness,
+    hallucination_metrics, history_secrets, hotspots, large_files, mutation, ownership, pipeline,
+    property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -318,6 +319,24 @@ def _add_todo_age_subparser(sub):
     todo_age_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_dead_code_confidence_subparser(sub):
+    dcc_p = sub.add_parser(
+        "dead-code-confidence",
+        help="Age every cross-file dead-code finding via git blame -- how long has it looked unused, "
+             "and how safe is it to remove"
+    )
+    dcc_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
+    dcc_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    dcc_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    dcc_p.add_argument(
+        "--stale-days", type=int, default=dead_code_confidence.DEFAULT_STALE_DAYS,
+        help=f"Age in days at/above which a finding is 'high' confidence, half of which is 'medium' "
+             f"(default: {dead_code_confidence.DEFAULT_STALE_DAYS})"
+    )
+    dcc_p.add_argument("--format", choices=["text", "json"], default="text")
+    dcc_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_ai_report_subparser(sub):
     ai_report_p = sub.add_parser(
         "ai-report",
@@ -472,6 +491,7 @@ def build_parser():
     _add_history_secrets_subparser(sub)
     _add_large_files_subparser(sub)
     _add_ai_report_subparser(sub)
+    _add_dead_code_confidence_subparser(sub)
 
     return parser
 
@@ -958,6 +978,29 @@ def cmd_ai_report(args):
     return 0
 
 
+def cmd_dead_code_confidence(args):
+    """Handle `codequality dead-code-confidence`: age every cross-file
+    dead-code finding (see codequality/analyzers/dead_code.py) via git
+    blame, and label how safe each looks to remove.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    config = _load_config(args, root)
+    try:
+        results = dead_code_confidence.compute(root, config, stale_days=args.stale_days)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = (
+        json.dumps(results, indent=2) if args.format == "json"
+        else dead_code_confidence.render_text(results, args.stale_days)
+    )
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -982,6 +1025,7 @@ _COMMANDS = {
     "history-secrets": cmd_history_secrets,
     "large-files": cmd_large_files,
     "ai-report": cmd_ai_report,
+    "dead-code-confidence": cmd_dead_code_confidence,
 }
 
 

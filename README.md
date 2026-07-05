@@ -150,6 +150,11 @@ codequality ownership .
 # human commit introduce it? Anything past --stale-days is flagged.
 codequality todo-age . --stale-days 90
 
+# Cross-file dead-code findings, aged via git blame: the longer a
+# "never referenced" function/class has sat untouched, the safer it is
+# to actually remove
+codequality dead-code-confidence . --stale-days 180
+
 # Does the test suite pass reliably, or does a test's result depend on
 # luck? (opt-in, runs your test suite N times -- can be slow)
 codequality flakiness .
@@ -222,6 +227,7 @@ Twenty-one more subcommands, each documented in its own section below:
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ai-report`,
 `codequality ownership`, `codequality todo-age`,
+`codequality dead-code-confidence`,
 `codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`,
 `codequality dependency-check`, `codequality env-check`,
@@ -339,6 +345,11 @@ ones:
   Flask route, a plugin registry, a CLI command) that a text search can't
   see, so decorated functions/classes are skipped entirely rather than
   guessed at.
+
+This check alone can't tell a `dead-code` finding that's brand new (maybe
+just not wired up yet) from one that's sat unused for years -- see
+[Dead-code confidence](#dead-code-confidence) below for the git-blame-based
+age dimension `codequality dead-code-confidence` adds on top of it.
 
 ### Doc examples that no longer parse
 
@@ -844,6 +855,59 @@ TODOs tend to linger longer than human ones, or get cleaned up sooner, in
 *your* repo's actual history. The text report also lists the stale
 markers themselves (file:line, age, snippet, group), capped and with an
 "...and N more" tail — same convention as `commit-lint`'s failure listing.
+
+## Dead-code confidence
+
+```bash
+codequality dead-code-confidence .
+codequality dead-code-confidence . --stale-days 30 --format json
+```
+
+The Structure category's cross-file `dead-code` check (see
+[Cross-file dead code](#cross-file-dead-code) above) is a pure snapshot: a
+public top-level function/class either has zero references anywhere else
+in the repo right now, or it doesn't -- it has no notion of *when* that
+code was last touched. A function that looks unused but was written
+yesterday might just be new/in-progress work nobody has wired up yet; one
+that's looked unused for two years is a much safer removal candidate.
+`dead-code-confidence` adds that missing time dimension, the same way
+`todo-age` (above) added one to the `todo-marker` style check: it calls
+straight into `analyzers/dead_code.py`'s `find_dead_code` (no
+re-detection, no re-litigating its exemptions -- `__all__`-exported
+names, dunders, `test_*`/`Test*` hooks, and anything decorated are still
+skipped exactly as they are in a normal `scan`) and, for every finding,
+`git blame -w --line-porcelain HEAD` (same technique as `todo-age`/
+`edit-distance`) finds the commit that introduced the exact `def`/`class`
+line, and that commit's author date gives the finding an age.
+
+`confidence` is a plain 3-tier label off that single number -- one signal
+can't honestly support more precision than a coarse label, so this
+doesn't invent a numeric score the way a genuinely multi-signal check
+might (same "auditable, not a black box" convention as `scorer.py`'s
+formulas). Given `age_days` and `--stale-days` (default 180):
+
+- **`high`** -- `age_days >= stale_days` (default: at least 180 days old).
+- **`medium`** -- `age_days >= stale_days / 2` (default: at least 90 days old).
+- **`low`** -- everything else.
+
+Results are sorted by `age_days` descending -- oldest, and so
+highest-confidence, first. That ordering doubles as a prioritized removal
+to-do list: the dead code that's been sitting untouched the longest is the
+safest to look at first. The text report is a `file:line` / name / age /
+confidence table, capped with an "...and N more" tail -- same convention as
+`todo-age`'s stale-marker listing. A finding whose introducing line can't
+be blamed (e.g. an untracked file with no git history yet) contributes
+nothing rather than reporting a fake age, the same "no age to report"
+rule `todo-age` follows.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to analyze (default `.`) |
+| `--config PATH` | Explicit config file (for `exclude`/`include_generic_languages`) |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
+| `--stale-days N` | Age in days at/above which a finding is `high` confidence, half of which is `medium` (default 180) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
 
 ## AI code quality report
 

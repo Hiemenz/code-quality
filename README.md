@@ -168,6 +168,10 @@ codequality dependency-check .
 # refactoring targets (see "Hotspots" below)
 codequality hotspots .
 
+# Env vars read in code vs. env vars documented in .env.example/README.md,
+# flagged in either direction (see "Environment variable drift" below)
+codequality env-check .
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -197,14 +201,14 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Sixteen more subcommands, each documented in its own section below:
+Seventeen more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ownership`,
 `codequality todo-age`, `codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`,
-`codequality dependency-check`, `codequality hotspots` (complexity crossed
-with change frequency — see
+`codequality dependency-check`, `codequality env-check`,
+`codequality hotspots` (complexity crossed with change frequency — see
 [Hotspots](#hotspots-complexity-x-change-frequency)), and
 `codequality api-diff` (public API comparison between any two git refs —
 see
@@ -879,6 +883,51 @@ other score in this tool.
 | `path` | Repo/directory root to analyze (default `.`) |
 | `--since REF` | Only count commits since this date/ref (`git --since` syntax) |
 | `--top N` | Max number of files to report (default 25) |
+
+## Environment variable drift
+
+```bash
+codequality env-check .
+codequality env-check . --format json
+```
+
+Compares environment variables actually *referenced* in the codebase
+against the ones actually *documented*, and flags a mismatch in either
+direction:
+
+- **`undocumented-env-var`** -- read somewhere in the code (`os.environ["X"]`,
+  `os.environ.get("X")`, `os.getenv("X")` for Python -- a real `ast` walk,
+  not regex) but not found in any documented source.
+- **`unused-documented-env-var`** -- documented, but never referenced
+  anywhere in the scanned code.
+
+"Documented" comes from whichever of these actually exist in the repo --
+`.env.example`/`.env.sample`/`.env.template` (plain `KEY=value` lines,
+comments/blanks ignored), and/or a section of `README.md` that looks like
+an env var reference: a fenced code block shaped like a `.env` file, or a
+markdown table with a header cell like "Environment Variable"/"Env Var".
+If neither is present, the documented side is simply empty rather than
+guessed at -- every usage found in the code is then reported as
+`undocumented-env-var` (nothing to compare it against), and no
+`unused-documented-env-var` can fire.
+
+Python detection is exact (`ast`, same reliability as every other
+Python-specific check in this tool); every other language (JS
+`process.env.X`, Go's `os.Getenv("X")`, Ruby's `ENV["X"]`, PHP/C's
+`getenv("X")`, Java's `System.getenv("X")`, ...) falls back to a
+line-level regex, the same heuristic tradeoff
+`analyzers/generic_analyzer.py` already makes for languages without a
+real parser here. Both issue types are reported `category="documentation"`,
+`severity="info"` -- a heuristic signal to look at, expected to be noisy
+especially from the non-Python fallback, not something that fails a build
+on its own. Like `dependency-check`, this is a standalone subcommand, not
+folded into `scan`'s score.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to check (default `.`) |
+| `--config PATH` | Explicit config file (for `exclude`/`include_generic_languages`) |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 

@@ -5,8 +5,8 @@ import sys
 
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
-    edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, mutation, ownership,
-    pipeline, property_scaffold, todo_age,
+    edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation,
+    ownership, pipeline, property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -384,6 +384,23 @@ def _add_history_secrets_subparser(sub):
     hs_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_large_files_subparser(sub):
+    lf_p = sub.add_parser(
+        "large-files",
+        help="Flag oversized or binary files tracked in git (accidental node_modules/build-artifact/"
+             "dataset commits) -- reads git ls-tree, no code parsing"
+    )
+    lf_p.add_argument("path", nargs="?", default=".", help="Git repo root to check (default: .)")
+    lf_p.add_argument("--config", help="Path to a .codequality.toml/.json config file (only .exclude is used)")
+    lf_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    lf_p.add_argument(
+        "--max-size-mb", type=float, default=large_files.DEFAULT_MAX_SIZE_MB,
+        help=f"Flag tracked files larger than this many MB as large-file (default: {large_files.DEFAULT_MAX_SIZE_MB})"
+    )
+    lf_p.add_argument("--format", choices=["text", "json"], default="text")
+    lf_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -411,6 +428,7 @@ def build_parser():
     _add_todo_age_subparser(sub)
     _add_env_check_subparser(sub)
     _add_history_secrets_subparser(sub)
+    _add_large_files_subparser(sub)
 
     return parser
 
@@ -727,6 +745,25 @@ def cmd_dependency_check(args):
     return 0
 
 
+def cmd_large_files(args):
+    """Handle `codequality large-files`: flag tracked files that are
+    oversized or binary -- reads `git ls-tree -r -l HEAD` only, no source
+    parsing. See codequality/large_files.py.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    config = _load_config(args, root)
+    issues = large_files.check(root, config, max_size_mb=args.max_size_mb)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = large_files.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_api_diff(args):
     """Handle `codequality api-diff`: public API comparison between two
     arbitrary git refs -- unlike `diff`'s breaking-signature-change check,
@@ -861,6 +898,7 @@ _COMMANDS = {
     "todo-age": cmd_todo_age,
     "env-check": cmd_env_check,
     "history-secrets": cmd_history_secrets,
+    "large-files": cmd_large_files,
 }
 
 

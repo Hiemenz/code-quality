@@ -156,6 +156,10 @@ codequality api-diff . --from v1.2 --to v1.3
 # -- no network access, ever (see "Dependency consistency check" below)
 codequality dependency-check .
 
+# Which files are both complex AND changed constantly -- the highest-risk
+# refactoring targets (see "Hotspots" below)
+codequality hotspots .
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -185,12 +189,15 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Twelve more subcommands, each documented in its own section below:
+Fourteen more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality scaffold-properties`,
 `codequality pipeline`, `codequality complexity-trend`,
-`codequality dependency-check`, and `codequality api-diff` (public API
+`codequality dependency-check`, `codequality hotspots` (complexity crossed
+with change frequency — see
+[Hotspots](#hotspots-complexity-x-change-frequency)), and
+`codequality api-diff` (public API
 comparison between any two git refs — see
 [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
 Plus `codequality mutation` and `codequality flakiness`, which are
@@ -712,6 +719,60 @@ standalone subcommand, not folded into `scan`'s score.
 | Flag | Meaning |
 |---|---|
 | `path` | Repo root to check (default `.`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+## Hotspots: complexity x change frequency
+
+```bash
+codequality hotspots .
+codequality hotspots . --since "6 months ago" --top 10
+codequality hotspots . --format json --output hotspots.json
+```
+
+Every check above answers "is this file complex" or "is this file changed
+a lot," but never both at once. A complex file that's been stable for a
+year is low-risk -- nobody's touching it, so its complexity isn't costing
+anyone anything right now. A complex file that a different person edits
+every week is the opposite: every one of those edits has to first
+untangle the same complexity, and each one is a chance to get it wrong.
+`codequality hotspots` is Michael Feathers' classic "hotspot" technique --
+cross per-file complexity with git change frequency to find the second
+kind of file, which is a far better prioritized refactoring to-do list
+than complexity alone.
+
+It's not a new analysis; it recombines two numbers this tool already
+computes elsewhere: a normal full scan (same per-function cyclomatic
+complexity `scorer.py` already scores) plus one `git log --name-only` pass
+over the whole repo's history (same single-pass-over-the-whole-log
+technique `codequality churn`'s internals use, so this stays one git
+invocation regardless of file count instead of one `git log --follow` per
+file). For each file:
+
+- **`complexity`** -- the *maximum* cyclomatic complexity of any function
+  in the file, not the average, so one deeply-tangled function isn't
+  diluted into blandness by a pile of trivial one-line helpers sharing its
+  file. A file with no functions at all scores 0 and can never be a
+  hotspot, no matter how often it's touched.
+- **`commit_count`** -- how many non-merge commits touched that file
+  (optionally scoped with `--since`, same `git --since` syntax as
+  `churn`/`edit-distance`/`commit-lint`).
+- **`hotspot_score`** -- `complexity * log(commit_count + 1)`. The log
+  dampens churn so a file touched 500 times isn't literally 500x riskier
+  than one touched 50 times -- a real difference, but not a
+  two-orders-of-magnitude one -- while still letting a heavily-churned
+  file clearly outrank an equally complex one that's barely been touched.
+
+See `codequality/hotspots.py`'s module docstring for the full reasoning
+behind the formula; both raw numbers stay visible in the output alongside
+the composite score, same "auditable, not a black box" convention as every
+other score in this tool.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to analyze (default `.`) |
+| `--since REF` | Only count commits since this date/ref (`git --since` syntax) |
+| `--top N` | Max number of files to report (default 25) |
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 

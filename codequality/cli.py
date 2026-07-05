@@ -5,7 +5,7 @@ import sys
 
 from codequality import (
     __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, dependency_check,
-    edit_distance, flakiness, hallucination_metrics, mutation, pipeline, property_scaffold,
+    edit_distance, flakiness, hallucination_metrics, hotspots, mutation, pipeline, property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -290,6 +290,24 @@ def _add_dependency_check_subparser(sub):
     dep_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_hotspots_subparser(sub):
+    hotspots_p = sub.add_parser(
+        "hotspots",
+        help="Rank files by complexity x change frequency (Michael Feathers' \"hotspot\" technique) -- "
+             "the files most worth a closer look first"
+    )
+    hotspots_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
+    hotspots_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    hotspots_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    hotspots_p.add_argument("--no-generic", action="store_true", help="Only analyze Python files")
+    hotspots_p.add_argument(
+        "--since", default=None, help="Only consider commits since this date/ref (git --since syntax)"
+    )
+    hotspots_p.add_argument("--top", type=int, default=25, help="Max number of files to report (default: 25)")
+    hotspots_p.add_argument("--format", choices=["text", "json"], default="text")
+    hotspots_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -312,6 +330,7 @@ def build_parser():
     _add_complexity_trend_subparser(sub)
     _add_api_diff_subparser(sub)
     _add_dependency_check_subparser(sub)
+    _add_hotspots_subparser(sub)
 
     return parser
 
@@ -647,6 +666,22 @@ def cmd_api_diff(args):
     return 1 if result["issues"] else 0
 
 
+def cmd_hotspots(args):
+    """Handle `codequality hotspots`: cross per-file complexity with git
+    change frequency (see codequality/hotspots.py) to rank the files most
+    worth a closer look first.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    config = _load_config(args, root)
+    rows = hotspots.compute(root, config, since=args.since)[: args.top]
+    text = json.dumps(rows, indent=2) if args.format == "json" else hotspots.render_text(rows, top_n=args.top)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -663,6 +698,7 @@ _COMMANDS = {
     "complexity-trend": cmd_complexity_trend,
     "api-diff": cmd_api_diff,
     "dependency-check": cmd_dependency_check,
+    "hotspots": cmd_hotspots,
 }
 
 

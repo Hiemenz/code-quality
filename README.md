@@ -220,7 +220,7 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
 | Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
-| Documentation | 8 | Docstring coverage on public functions and modules, plus stale docstrings that document a removed parameter |
+| Documentation | 8 | Docstring coverage on public functions and modules, stale docstrings that document a removed parameter, and Markdown code examples that no longer parse (reported, doesn't affect this category's score -- see below) |
 | Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
 | Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
 | Correctness | 15 | Always-on: assertion-free tests, unreachable code. Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
@@ -307,6 +307,32 @@ ones:
   Flask route, a plugin registry, a CLI command) that a text search can't
   see, so decorated functions/classes are skipped entirely rather than
   guessed at.
+
+### Doc examples that no longer parse
+
+`stale-docstring-param` (above) catches doc rot in a parameter list;
+`scan` (full repo only, same "no rest of the repo to compare in `diff`
+mode" reasoning as dead code above -- a README example can rot from a
+change to a file that isn't even part of the diff) also checks the
+cheapest form of rot in a *code example*: does it still parse as valid
+Python at all? Every fenced ` ```python `/` ```py ` block in every
+Markdown file in the repo (README included) is run through `ast.parse()`
+-- never executed, just parsed, the same "never run code from the
+scanned repo" rule every other check here follows -- and a block that
+raises `SyntaxError` is flagged as **`broken-doc-example`** at the file
+and line where the block starts, with the parser's own error message
+included. This is deliberately a much narrower claim than "the example
+still matches current behavior" (which would require actually running
+it); it only catches the case where nobody has so much as glanced at the
+example since an edit made its syntax invalid (a leftover Python 2-ism, a
+copy-paste that dropped a closing paren, ...). Reported at `warn`
+severity under the Documentation category without affecting that
+category's score, the same "signal, not a build-breaker" treatment
+`dead-code` gets above. Non-Python fences (` ```bash `, ` ```json `, ...)
+are never touched. This first version only looks at Markdown fences --
+see `codequality/analyzers/doc_examples.py`'s module docstring for why
+docstring-embedded (`>>>`-style) examples are scoped out for now rather
+than half-built.
 
 ### Language support
 

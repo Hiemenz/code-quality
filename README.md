@@ -176,6 +176,10 @@ codequality env-check .
 # line -- deleting a line doesn't remove it from git's history
 codequality history-secrets .
 
+# Did someone accidentally commit a node_modules/, a build artifact, or a
+# multi-MB binary blob into git? (see "Large/binary file check" below)
+codequality large-files . --max-size-mb 5
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -205,7 +209,7 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Eighteen more subcommands, each documented in its own section below:
+Nineteen more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ownership`,
@@ -214,7 +218,8 @@ Eighteen more subcommands, each documented in its own section below:
 `codequality dependency-check`, `codequality env-check`,
 `codequality history-secrets` (secrets that were ever committed, even if
 since removed — see [Secrets in git history](#secrets-in-git-history)),
-`codequality hotspots` (complexity crossed with change frequency — see
+`codequality large-files`, `codequality hotspots` (complexity crossed with
+change frequency — see
 [Hotspots](#hotspots-complexity-x-change-frequency)), and
 `codequality api-diff` (public API comparison between any two git refs —
 see
@@ -992,6 +997,55 @@ folded into `scan`'s score.
 | `path` | Repo/directory root to check (default `.`) |
 | `--config PATH` | Explicit config file (for `exclude`/`include_generic_languages`) |
 | `--exclude PATTERN` | Glob to exclude, repeatable |
+
+## Large/binary file check
+
+```bash
+codequality large-files .
+codequality large-files . --max-size-mb 10 --format json
+```
+
+A common real-world accident: someone commits a `node_modules/`
+directory, a build artifact, a multi-hundred-MB dataset, or a binary blob
+(image, zip, `.pyc`, compiled library) into git. Git history doesn't
+forget a committed blob -- even deleting the file in a later commit
+leaves its bytes in every clone forever short of a history rewrite -- so
+this is worth catching early, and it needs no code understanding: just
+file size and a content sniff, read straight from `git ls-tree -r -l
+HEAD` (which reports each tracked blob's size directly, and reflects what
+is actually committed rather than the working tree, so an untracked huge
+file sitting around locally is correctly ignored). Two checks, both
+per-file:
+
+- **`large-file`** -- the blob is bigger than `--max-size-mb` (default 5).
+  Severity `warn`.
+- **`large-binary-file`** -- the file is very likely binary: a NUL byte in
+  its first few KB (the same heuristic git/most diff tools use), or a
+  known binary extension (images, archives, compiled artifacts, fonts,
+  ...). Always reported when detected, but severity is `warn` only once
+  the file also clears a much smaller size floor (100KB) -- a tiny binary
+  file (a small icon, a tiny fixture) is just `info`, a "worth a look, not
+  a build-breaker" signal.
+
+No attempt is made to guess "is this an intentional assets directory" --
+same "no cleverness, just reproducibility" tradeoff as every other
+heuristic check in this tool, so false positives (a legitimately-committed
+image or fixture) are expected and fine. Issues use the same `Issue`
+shape as every other check, categorized `structure` (this is about the
+physical size/shape of what's checked into the repo, not line-level
+tidiness or code behaving correctly -- see
+`codequality/large_files.py`'s module docstring). Like
+`dependency-check`/`churn`/`mutation`, this is a standalone subcommand,
+not folded into `scan`'s score: most of what it flags (binaries,
+oversized blobs) was never discovered by `scan`'s file walk in the first
+place, so there's no per-file score to attach it to.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Git repo root to check (default `.`) |
+| `--config PATH` | Explicit config file (only `exclude` patterns are used) |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
+| `--max-size-mb N` | Flag tracked files bigger than this as `large-file` (default 5) |
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 

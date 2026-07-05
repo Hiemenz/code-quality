@@ -191,7 +191,7 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Category | Default weight | What it measures |
 |---|---|---|
 | Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
-| Structure | 10 | Function length, nesting depth, file length |
+| Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file) |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, plus stale docstrings that document a removed parameter |
 | Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
@@ -215,7 +215,7 @@ simple arithmetic on purpose, not a black box.
 Python-only checks (no equivalent yet for other languages): unused
 imports/variables, `pickle`/`yaml.load` deserialization checks,
 assertion-free tests, broad exception-swallowing, stale-docstring
-parameters, and unreachable code. Hardcoded-secret and `eval`/`exec`
+parameters, unreachable code, and circular imports. Hardcoded-secret and `eval`/`exec`
 detection run for every language via a line-level regex. Function-naming
 convention checks run for Python and, when the `tree-sitter` extra is
 installed, for JS/TS/Java/C#/Go/Ruby/Rust/Kotlin/Swift/Scala too — each

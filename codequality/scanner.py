@@ -8,7 +8,8 @@ import os
 
 from codequality import coverage_check, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    duplication, generic_analyzer, python_analyzer, scope_check, signature_diff, treesitter_analyzer,
+    circular_imports, duplication, generic_analyzer, python_analyzer, scope_check, signature_diff,
+    treesitter_analyzer,
 )
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
 
@@ -84,6 +85,27 @@ def _apply_duplication(root, file_metrics_by_path):
         fm = file_metrics_by_path.get(rel_path)
         if fm is not None:
             fm.duplicate_lines = len(idx_set)
+
+
+def _apply_circular_imports(root, metrics_by_path):
+    """Whole-graph property, but scoped to whatever's actually in
+    `metrics_by_path` -- same shape as `_apply_duplication`. In `diff` mode
+    this only sees the changed files, so a cycle only surfaces there if
+    every file in it happens to be part of the change; that's an accepted
+    narrowing (duplication is scoped the same way) rather than re-walking
+    the whole repo on every diff.
+    """
+    file_sources = {}
+    for rel_path, fm in metrics_by_path.items():
+        if fm.language != "python":
+            continue
+        source = _read_source(root, rel_path)
+        if source is not None:
+            file_sources[rel_path] = source
+    for issue in circular_imports.circular_import_issues(file_sources):
+        fm = metrics_by_path.get(issue.file)
+        if fm is not None:
+            fm.issues.append(issue)
 
 
 def _apply_type_checking(root, config, metrics_by_path, changed_files=None):
@@ -169,6 +191,7 @@ def scan_repo(root, config):
         metrics.append(fm)
         metrics_by_path[rel_path] = fm
     _apply_duplication(root, metrics_by_path)
+    _apply_circular_imports(root, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path)
     _apply_coverage(root, config, metrics_by_path)
     return metrics
@@ -202,6 +225,7 @@ def scan_changed(root, config, changed_files, base=None, task_description=None):
         metrics.append(fm)
         metrics_by_path[rel_path] = fm
     _apply_duplication(root, metrics_by_path)
+    _apply_circular_imports(root, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path, changed_files=changed_files)
     _apply_coverage(root, config, metrics_by_path, changed_files=changed_files)
     _apply_signature_diff(root, metrics_by_path, base)

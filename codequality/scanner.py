@@ -8,9 +8,10 @@ import os
 
 from codequality import coverage_check, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, dead_code, duplication, generic_analyzer, python_analyzer, scope_check, signature_diff,
-    treesitter_analyzer,
+    circular_imports, dead_code, doc_examples, duplication, generic_analyzer, python_analyzer, scope_check,
+    signature_diff, treesitter_analyzer,
 )
+from codequality.analyzers.base import FileMetrics
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
 
 
@@ -127,6 +128,55 @@ def _apply_dead_code(root, metrics_by_path):
             fm.issues.extend(issues)
 
 
+def _discover_markdown_files(root, exclude_patterns):
+    """Sorted list of relative paths to every `.md` file under `root`. Kept
+    separate from `discover_files`: Markdown isn't a source language with
+    functions/complexity to score, so it doesn't belong in the Python/
+    generic-language dispatch table above -- it gets its own small walk,
+    applying the same DEFAULT_IGNORE_DIRS/exclude-pattern rules.
+    """
+    results = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in DEFAULT_IGNORE_DIRS and not d.endswith(".egg-info")]
+        for fn in filenames:
+            if not fn.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root)
+            if _is_excluded(rel, exclude_patterns):
+                continue
+            results.append(rel)
+    return sorted(results)
+
+
+def _apply_doc_examples(root, config, metrics, metrics_by_path):
+    """Validate that fenced ```python/```py Markdown code blocks still
+    parse -- see analyzers/doc_examples.py. Full-scan only, not `diff`:
+    unlike the line-level style checks, "does this repo's documentation
+    still parse" isn't scoped to whichever lines a diff happened to touch
+    (a signature change three files away is exactly the case a README
+    example rots from, with the README itself untouched by that diff), so
+    there's no meaningful "just the changed lines" version of this check
+    the way `diff` mode has for everything else. It's per-file rather than
+    cross-file like `_apply_duplication`/`_apply_dead_code` above, but it
+    shares their reasoning for being full-scan-only.
+    """
+    for rel_path in _discover_markdown_files(root, config.exclude):
+        source = _read_source(root, rel_path)
+        if source is None:
+            continue
+        issues = doc_examples.check_markdown_source(rel_path, source)
+        if not issues:
+            continue
+        fm = metrics_by_path.get(rel_path)
+        if fm is None:
+            line_count = len(source.splitlines())
+            fm = FileMetrics(path=rel_path, language="markdown", total_lines=line_count, loc=line_count)
+            metrics.append(fm)
+            metrics_by_path[rel_path] = fm
+        fm.issues.extend(issues)
+
+
 def _apply_type_checking(root, config, metrics_by_path, changed_files=None):
     """Run mypy once over the whole root (it needs full-project context for
     real cross-file inference) and distribute its findings onto the
@@ -214,6 +264,7 @@ def scan_repo(root, config):
     _apply_dead_code(root, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path)
     _apply_coverage(root, config, metrics_by_path)
+    _apply_doc_examples(root, config, metrics, metrics_by_path)
     return metrics
 
 

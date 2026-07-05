@@ -4,8 +4,8 @@ import os
 import sys
 
 from codequality import (
-    __version__, baseline as baseline_mod, churn, complexity_trend, edit_distance, hallucination_metrics, mutation,
-    pipeline, property_scaffold,
+    __version__, baseline as baseline_mod, churn, commit_lint, complexity_trend, edit_distance,
+    hallucination_metrics, mutation, pipeline, property_scaffold,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -122,6 +122,27 @@ def _add_edit_distance_subparser(sub):
     edit_distance_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_commit_lint_subparser(sub):
+    commit_lint_p = sub.add_parser(
+        "commit-lint", help="Check commit subject lines against fixed, deterministic quality rules"
+    )
+    commit_lint_p.add_argument("path", nargs="?", default=".", help="Git repo root (default: .)")
+    commit_lint_p.add_argument(
+        "--marker", default=commit_lint.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted (default: "{commit_lint.DEFAULT_MARKER}")'
+    )
+    commit_lint_p.add_argument(
+        "--since", default=None, help="Only consider commits since this date/ref (git --since syntax)"
+    )
+    commit_lint_p.add_argument(
+        "--strict", action="store_true",
+        help="Also apply the trailing-period and not-capitalized rules (off by default -- more "
+             "contentious style opinions)"
+    )
+    commit_lint_p.add_argument("--format", choices=["text", "json"], default="text")
+    commit_lint_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_scaffold_subparser(sub):
     scaffold_p = sub.add_parser(
         "scaffold-properties",
@@ -236,6 +257,7 @@ def build_parser():
     _add_baseline_subparser(sub)
     _add_churn_subparser(sub)
     _add_edit_distance_subparser(sub)
+    _add_commit_lint_subparser(sub)
     _add_scaffold_subparser(sub)
     _add_mutation_subparser(sub)
     _add_pipeline_subparser(sub)
@@ -398,6 +420,22 @@ def cmd_edit_distance(args):
     return 0
 
 
+def cmd_commit_lint(args):
+    """Handle `codequality commit-lint`: deterministic commit-subject quality rules."""
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        result = commit_lint.compute(root, marker=args.marker, since=args.since, strict=args.strict)
+    except GitError as e:
+        print(f"error: git log failed: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(result, indent=2) if args.format == "json" else commit_lint.render_text(result, args.strict)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_scaffold_properties(args):
     """Handle `codequality scaffold-properties`: report + generate Hypothesis stubs."""
     root = os.path.abspath(args.path)
@@ -517,6 +555,7 @@ _COMMANDS = {
     "baseline": cmd_baseline,
     "churn": cmd_churn,
     "edit-distance": cmd_edit_distance,
+    "commit-lint": cmd_commit_lint,
     "scaffold-properties": cmd_scaffold_properties,
     "mutation": cmd_mutation,
     "pipeline": cmd_pipeline,

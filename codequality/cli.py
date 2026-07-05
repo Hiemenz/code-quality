@@ -4,7 +4,7 @@ import os
 import sys
 
 from codequality import (
-    __version__, baseline as baseline_mod, churn, commit_lint, complexity_trend, edit_distance,
+    __version__, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_trend, edit_distance,
     hallucination_metrics, mutation, pipeline, property_scaffold,
 )
 from codequality.config import Config
@@ -220,6 +220,22 @@ def _add_complexity_trend_subparser(sub):
     show_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_api_diff_subparser(sub):
+    api_diff_p = sub.add_parser(
+        "api-diff",
+        help="Compare every Python file's public API between two arbitrary git refs (e.g. two tags)"
+    )
+    api_diff_p.add_argument("path", nargs="?", default=".", help="Git repo root to compare (default: .)")
+    api_diff_p.add_argument(
+        "--from", dest="from_ref", required=True, metavar="REF", help="Git ref for the 'before' state"
+    )
+    api_diff_p.add_argument(
+        "--to", dest="to_ref", default="HEAD", metavar="REF", help="Git ref for the 'after' state (default: HEAD)"
+    )
+    api_diff_p.add_argument("--format", choices=["text", "json"], default="text")
+    api_diff_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_hallucination_rate_subparser(sub):
     hall_p = sub.add_parser(
         "hallucination-rate",
@@ -263,6 +279,7 @@ def build_parser():
     _add_pipeline_subparser(sub)
     _add_hallucination_rate_subparser(sub)
     _add_complexity_trend_subparser(sub)
+    _add_api_diff_subparser(sub)
 
     return parser
 
@@ -548,6 +565,25 @@ def cmd_complexity_trend(args):
     return 0
 
 
+def cmd_api_diff(args):
+    """Handle `codequality api-diff`: public API comparison between two
+    arbitrary git refs -- unlike `diff`'s breaking-signature-change check,
+    not scoped to the working tree/one base folded into a scoring run.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        result = api_diff.compare(root, args.from_ref, args.to_ref)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = api_diff.render_json(result) if args.format == "json" else api_diff.render_text(result)
+    _emit(text, args.output)
+    return 1 if result["issues"] else 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -561,6 +597,7 @@ _COMMANDS = {
     "pipeline": cmd_pipeline,
     "hallucination-rate": cmd_hallucination_rate,
     "complexity-trend": cmd_complexity_trend,
+    "api-diff": cmd_api_diff,
 }
 
 

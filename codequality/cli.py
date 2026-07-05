@@ -7,7 +7,7 @@ from codequality import (
     __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_coverage_risk,
     complexity_regression_diff, complexity_trend, dead_code_confidence, dependency_check, dependency_risk,
     edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation,
-    ownership, pipeline, property_scaffold, todo_age,
+    orphaned_config, ownership, pipeline, property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -416,6 +416,17 @@ def _add_dependency_risk_subparser(sub):
     dep_risk_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_orphaned_config_subparser(sub):
+    oc_p = sub.add_parser(
+        "orphaned-config",
+        help="Flag CI workflows/docker-compose files/Makefiles that reference a local script or path "
+             "that no longer exists -- structural, no judgment about whether the feature is still wanted"
+    )
+    oc_p.add_argument("path", nargs="?", default=".", help="Repo root to check (default: .)")
+    oc_p.add_argument("--format", choices=["text", "json"], default="text")
+    oc_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_hotspots_subparser(sub):
     hotspots_p = sub.add_parser(
         "hotspots",
@@ -526,6 +537,7 @@ def build_parser():
     _add_complexity_regression_subparser(sub)
     _add_dependency_check_subparser(sub)
     _add_dependency_risk_subparser(sub)
+    _add_orphaned_config_subparser(sub)
     _add_hotspots_subparser(sub)
     _add_complexity_coverage_risk_subparser(sub)
     _add_ownership_subparser(sub)
@@ -869,6 +881,22 @@ def cmd_dependency_risk(args):
     return 0
 
 
+def cmd_orphaned_config(args):
+    """Handle `codequality orphaned-config`: flags CI workflows/docker-
+    compose files/Makefiles that reference a local path that no longer
+    exists. Purely structural (existence check only) -- see
+    codequality/orphaned_config.py.
+    """
+    root = os.path.abspath(args.path)
+    issues = orphaned_config.check(root)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = orphaned_config.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_large_files(args):
     """Handle `codequality large-files`: flag tracked files that are
     oversized or binary -- reads `git ls-tree -r -l HEAD` only, no source
@@ -1103,6 +1131,7 @@ _COMMANDS = {
     "complexity-regression": cmd_complexity_regression,
     "dependency-check": cmd_dependency_check,
     "dependency-risk": cmd_dependency_risk,
+    "orphaned-config": cmd_orphaned_config,
     "hotspots": cmd_hotspots,
     "complexity-coverage-risk": cmd_complexity_coverage_risk,
     "ownership": cmd_ownership,

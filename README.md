@@ -146,6 +146,10 @@ codequality hallucination-rate . --check-imports --check-types
 # file's current lines, plus what fraction trace to an AI-assisted commit
 codequality ownership .
 
+# How old is each TODO/FIXME/XXX/HACK marker, and did an AI-assisted or
+# human commit introduce it? Anything past --stale-days is flagged.
+codequality todo-age . --stale-days 90
+
 # Does the test suite pass reliably, or does a test's result depend on
 # luck? (opt-in, runs your test suite N times -- can be slow)
 codequality flakiness .
@@ -193,13 +197,14 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Fifteen more subcommands, each documented in its own section below:
+Sixteen more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ownership`,
-`codequality scaffold-properties`, `codequality pipeline`,
-`codequality complexity-trend`, `codequality dependency-check`,
-`codequality hotspots` (complexity crossed with change frequency — see
+`codequality todo-age`, `codequality scaffold-properties`,
+`codequality pipeline`, `codequality complexity-trend`,
+`codequality dependency-check`, `codequality hotspots` (complexity crossed
+with change frequency — see
 [Hotspots](#hotspots-complexity-x-change-frequency)), and
 `codequality api-diff` (public API comparison between any two git refs —
 see
@@ -730,6 +735,30 @@ The text report is a table sorted by `top_author_share` descending, with
 | `--threshold` | Single-identity line share at/above which a file is flagged `low-bus-factor` (default `0.9`) |
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
+
+## TODO aging
+
+```bash
+codequality todo-age .
+codequality todo-age . --stale-days 30 --marker "Generated-By: MyBot"
+```
+
+The Style category's `todo-marker` check (see the table above) flags every
+`TODO`/`FIXME`/`XXX`/`HACK` comment as a snapshot — it can't tell a marker
+added yesterday from one that's been sitting there for three years.
+`todo-age` adds that missing time dimension: for every marker line found
+by the same regex the style check uses, `git blame -w HEAD` finds the
+commit that introduced that exact line, and that commit's author date and
+AI-assisted/human classification (same marker-substring convention as
+`churn`, default `"Co-Authored-By: Claude"`) give the marker an age and an
+origin. Anything older than `--stale-days` (default 90) is flagged
+`stale-todo`. Results are rolled up per group — count, average age,
+oldest marker, and how many are stale — the same two-group shape as
+`churn`/`edit-distance`/`commit-lint`, so you can see whether AI-introduced
+TODOs tend to linger longer than human ones, or get cleaned up sooner, in
+*your* repo's actual history. The text report also lists the stale
+markers themselves (file:line, age, snippet, group), capped and with an
+"...and N more" tail — same convention as `commit-lint`'s failure listing.
 
 ## Property-based test scaffolding
 

@@ -165,6 +165,9 @@ codequality scaffold-properties .
 # What broke in the public API between two tags/branches/commits?
 codequality api-diff . --from v1.2 --to v1.3
 
+# Which functions got significantly more complex between two tags/branches/commits?
+codequality complexity-regression . --from v1.2 --to v1.3
+
 # Structural consistency checks on requirements.txt/pyproject.toml/package.json
 # -- no network access, ever (see "Dependency consistency check" below)
 codequality dependency-check .
@@ -242,7 +245,10 @@ test presence — see
 [Complexity x test presence risk](#complexity-x-test-presence-risk)), and
 `codequality api-diff` (public API comparison between any two git refs —
 see
-[`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
+[`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)),
+and `codequality complexity-regression` (per-function complexity
+comparison between any two git refs — see
+[`codequality complexity-regression`](#codequality-complexity-regression-per-function-complexity-comparison-across-any-two-refs)).
 Plus `codequality mutation` and `codequality flakiness`, which are
 deliberately separate from everything else — see
 [Mutation testing](#mutation-testing) and
@@ -461,9 +467,9 @@ not the other 39 functions you didn't touch.
 
 ### Diff-only correctness checks
 
-Two checks only make sense with an "old" and a "new" version to compare,
-so they only run in `diff` mode, and both are always-on (no opt-in, no
-extra dependency):
+Three checks only make sense with an "old" and a "new" version to compare,
+so they only run in `diff` mode, and all three are always-on (no opt-in,
+no extra dependency):
 
 - **`breaking-signature-change`** — compares each changed Python
   function/method's old and new parameter list and flags removed
@@ -471,6 +477,21 @@ extra dependency):
   parameters: the three ways a signature change silently breaks existing
   callers. Limited to top-level functions and methods of top-level
   classes — that's what "public API" means for most codebases.
+- **`complexity-regression`** — the complexity-focused sibling of
+  `breaking-signature-change`: same old-vs-new comparison, same
+  top-level-functions-and-methods scope (`analyzers/signature_diff.py`'s
+  `qualified_functions`, reused as-is rather than re-derived), but compares
+  each matched function's cyclomatic complexity instead of its parameter
+  list (the same per-function number the Complexity category is already
+  scored from). A function whose complexity increased by more than 5
+  (an absolute delta, not a percentage — see
+  `codequality/analyzers/complexity_regression.py`'s module docstring for
+  why one fixed threshold was chosen over a relative "doubled" rule) is
+  flagged with its old and new numbers, e.g. `cyclomatic complexity
+  increased from 4 to 12 (+8)`. Reported under the Complexity category
+  (not Correctness, unlike the other two checks in this section) at `warn`
+  severity. A brand-new function has no old counterpart to compare against
+  and is silently skipped, same as `breaking-signature-change`.
 - **`scope-mismatch`** — tokenizes a task description (`--task-description`,
   defaulting to the last commit's subject line) and each changed file's
   path, then flags a changed file that shares no keyword with the
@@ -479,6 +500,12 @@ extra dependency):
   flags a file that shares a directory with one that did match — a vague
   subject like `"fix bug"` or a commit that only touches one area never
   triggers it.
+
+`complexity-regression` also has a standalone, `api-diff`-style subcommand
+for comparing any two points in history on demand (not just the current
+`diff` invocation) — see
+[`codequality complexity-regression`](#codequality-complexity-regression-per-function-complexity-comparison-across-any-two-refs)
+below.
 
 ## `codequality api-diff`: public API comparison across any two refs
 
@@ -527,6 +554,49 @@ Exit code: `1` if any issue was found (breaking change or removed file),
 `0` if the API is unchanged between the two refs, `2` on a git/usage error
 (e.g. a ref that doesn't resolve) — so it doubles as a CI gate for
 "did this release break the public API" between two tags.
+
+## `codequality complexity-regression`: per-function complexity comparison across any two refs
+
+```bash
+codequality complexity-regression . --from v1.2 --to v1.3
+codequality complexity-regression . --from HEAD~20   # --to defaults to HEAD
+codequality complexity-regression . --from origin/main --threshold 3 --format json
+```
+
+The same generalization `api-diff` is to `breaking-signature-change`,
+applied to `complexity-regression` (above): `diff`'s check only ever
+compares the working tree (or one `--base`) against the current `diff`
+invocation, and only for files that happen to appear in that one diff.
+`codequality complexity-regression` answers a different question instead:
+"which functions have gotten meaningfully more complex between any two
+points in history" — two tags, two branches, or two commit shas — walking
+every Python file that exists at `--to` (via `git ls-tree`), fetching each
+file's content at both ends, and running the exact same comparison
+(`analyzers/complexity_regression.py`'s `compare_functions`, the same
+function `diff` mode's wiring calls) on each pair. Still pure `ast`
+comparison plus the same McCabe counting `python_analyzer.py`'s score
+already uses — no LLM, no network call.
+
+Unlike `api-diff`, there is no `removed-public-file`-style third outcome
+here: a function (or a whole file) deleted between the two refs has no
+*new* complexity number to report a regression on, so it's silently
+skipped, the same "nothing to compare" treatment a brand-new function gets
+in the other direction.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Git repo root to compare (default `.`) |
+| `--from REF` | Git ref for the "before" state (required) |
+| `--to REF` | Git ref for the "after" state (default `HEAD`) |
+| `--threshold N` | Absolute complexity increase above which a function is flagged (default `5`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+Exit code: `1` if any function's complexity regressed past the threshold,
+`0` if none did, `2` on a git/usage error (e.g. a ref that doesn't
+resolve) — so, like `api-diff`, it doubles as a CI gate, this time for
+"did this release make anything meaningfully harder to reason about"
+between two tags.
 
 ## Secrets in git history
 

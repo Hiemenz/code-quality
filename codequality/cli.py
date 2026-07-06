@@ -5,8 +5,8 @@ import sys
 
 from codequality import (
     __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_coverage_risk,
-    complexity_trend, dead_code_confidence, dependency_check, edit_distance, env_check, flakiness,
-    hallucination_metrics, history_secrets, hotspots, large_files, mutation, ownership, pipeline,
+    complexity_regression_diff, complexity_trend, dead_code_confidence, dependency_check, edit_distance, env_check,
+    flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation, ownership, pipeline,
     property_scaffold, todo_age,
 )
 from codequality.config import Config
@@ -262,6 +262,28 @@ def _add_api_diff_subparser(sub):
     api_diff_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_complexity_regression_subparser(sub):
+    cr_p = sub.add_parser(
+        "complexity-regression",
+        help="Compare every Python function's cyclomatic complexity between two arbitrary git refs "
+             "(e.g. two tags), flagging functions that got significantly more complex"
+    )
+    cr_p.add_argument("path", nargs="?", default=".", help="Git repo root to compare (default: .)")
+    cr_p.add_argument(
+        "--from", dest="from_ref", required=True, metavar="REF", help="Git ref for the 'before' state"
+    )
+    cr_p.add_argument(
+        "--to", dest="to_ref", default="HEAD", metavar="REF", help="Git ref for the 'after' state (default: HEAD)"
+    )
+    cr_p.add_argument(
+        "--threshold", type=int, default=complexity_regression_diff.DEFAULT_THRESHOLD,
+        help="Absolute complexity increase above which a function is flagged "
+             f"(default: {complexity_regression_diff.DEFAULT_THRESHOLD})"
+    )
+    cr_p.add_argument("--format", choices=["text", "json"], default="text")
+    cr_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_hallucination_rate_subparser(sub):
     hall_p = sub.add_parser(
         "hallucination-rate",
@@ -487,6 +509,7 @@ def build_parser():
     _add_hallucination_rate_subparser(sub)
     _add_complexity_trend_subparser(sub)
     _add_api_diff_subparser(sub)
+    _add_complexity_regression_subparser(sub)
     _add_dependency_check_subparser(sub)
     _add_hotspots_subparser(sub)
     _add_complexity_coverage_risk_subparser(sub)
@@ -853,6 +876,29 @@ def cmd_api_diff(args):
     return 1 if result["issues"] else 0
 
 
+def cmd_complexity_regression(args):
+    """Handle `codequality complexity-regression`: per-function complexity
+    comparison between two arbitrary git refs -- the `api-diff`-style
+    generalization of `diff`'s always-on complexity-regression check,
+    usable against any two points in history, not just the current diff.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        result = complexity_regression_diff.compare(root, args.from_ref, args.to_ref, threshold=args.threshold)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    text = (
+        complexity_regression_diff.render_json(result) if args.format == "json"
+        else complexity_regression_diff.render_text(result)
+    )
+    _emit(text, args.output)
+    return 1 if result["issues"] else 0
+
+
 def cmd_hotspots(args):
     """Handle `codequality hotspots`: cross per-file complexity with git
     change frequency (see codequality/hotspots.py) to rank the files most
@@ -1023,6 +1069,7 @@ _COMMANDS = {
     "hallucination-rate": cmd_hallucination_rate,
     "complexity-trend": cmd_complexity_trend,
     "api-diff": cmd_api_diff,
+    "complexity-regression": cmd_complexity_regression,
     "dependency-check": cmd_dependency_check,
     "hotspots": cmd_hotspots,
     "complexity-coverage-risk": cmd_complexity_coverage_risk,

@@ -5,9 +5,9 @@ import sys
 
 from codequality import (
     __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_coverage_risk,
-    complexity_regression_diff, complexity_trend, dead_code_confidence, dependency_check, edit_distance, env_check,
-    flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation, ownership, pipeline,
-    property_scaffold, todo_age,
+    complexity_regression_diff, complexity_trend, dead_code_confidence, dependency_check, dependency_risk,
+    edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation,
+    ownership, pipeline, property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -402,6 +402,20 @@ def _add_dependency_check_subparser(sub):
     dep_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_dependency_risk_subparser(sub):
+    dep_risk_p = sub.add_parser(
+        "dependency-risk",
+        help="Rank declared dependencies by Python-import usage count x dependency-check's own structural "
+             "risk flags -- offline, no registry calls, NOT a staleness/CVE check (see README)"
+    )
+    dep_risk_p.add_argument("path", nargs="?", default=".", help="Repo root to analyze (default: .)")
+    dep_risk_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    dep_risk_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    dep_risk_p.add_argument("--top", type=int, default=25, help="Max number of packages to report (default: 25)")
+    dep_risk_p.add_argument("--format", choices=["text", "json"], default="text")
+    dep_risk_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_hotspots_subparser(sub):
     hotspots_p = sub.add_parser(
         "hotspots",
@@ -511,6 +525,7 @@ def build_parser():
     _add_api_diff_subparser(sub)
     _add_complexity_regression_subparser(sub)
     _add_dependency_check_subparser(sub)
+    _add_dependency_risk_subparser(sub)
     _add_hotspots_subparser(sub)
     _add_complexity_coverage_risk_subparser(sub)
     _add_ownership_subparser(sub)
@@ -838,6 +853,22 @@ def cmd_dependency_check(args):
     return 0
 
 
+def cmd_dependency_risk(args):
+    """Handle `codequality dependency-risk`: Python-import usage count x
+    dependency_check's own structural risk flags -- purely local signals,
+    NOT staleness/CVE detection. See codequality/dependency_risk.py.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    rows = dependency_risk.compute(root, config)
+    if args.format == "json":
+        text = json.dumps(rows[: args.top], indent=2)
+    else:
+        text = dependency_risk.render_text(rows, top_n=args.top)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_large_files(args):
     """Handle `codequality large-files`: flag tracked files that are
     oversized or binary -- reads `git ls-tree -r -l HEAD` only, no source
@@ -1071,6 +1102,7 @@ _COMMANDS = {
     "api-diff": cmd_api_diff,
     "complexity-regression": cmd_complexity_regression,
     "dependency-check": cmd_dependency_check,
+    "dependency-risk": cmd_dependency_risk,
     "hotspots": cmd_hotspots,
     "complexity-coverage-risk": cmd_complexity_coverage_risk,
     "ownership": cmd_ownership,

@@ -373,6 +373,21 @@ def check(root):
     return issues
 
 
+def parse_manifests(root):
+    """Public, additive entry point onto the raw per-section parsed
+    dependency data `check()` already computes internally for its own use.
+
+    Returns the same `{section_id: [Dependency, ...]}` shape
+    `_collect_deps_by_section` builds -- one manifest parse, shared by both
+    `check()` and any other module that wants the *parsed* declarations
+    (name, spec, pinned state) rather than only the final Issue list, e.g.
+    `codequality/dependency_risk.py`, which needs the declared package
+    names themselves to count how often each is imported. Purely additive:
+    `check()`'s own behavior/return shape is unchanged.
+    """
+    return _collect_deps_by_section(root)
+
+
 def render_text(issues):
     if not issues:
         return "Dependency Check\n\nNo issues found."

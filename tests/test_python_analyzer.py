@@ -1,8 +1,10 @@
 import os
+import tempfile
 import unittest
 
 from codequality.analyzers import python_analyzer
-from codequality.config import DEFAULT_CONFIG, Limits
+from codequality.config import Config, DEFAULT_CONFIG, Limits
+from codequality.scanner import analyze_file
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
@@ -228,6 +230,68 @@ class TestPythonAnalyzer(unittest.TestCase):
         source = "def f(a):\n    if a:\n        return 1\n    return 0\n"
         fm = python_analyzer.analyze("f.py", source, _limits())
         self.assertNotIn("unreachable-code", {i.symbol for i in fm.issues})
+
+    def test_print_in_plain_module_function_is_flagged(self):
+        """A print() call in an ordinary library function, with no
+        __name__ == "__main__" guard anywhere in the file, is a candidate
+        debug leftover."""
+        source = "def do_work():\n    print('working')\n    return 1\n"
+        fm = python_analyzer.analyze("lib.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "print-in-library-code"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].category, "style")
+        self.assertEqual(issues[0].severity, "info")
+
+    def test_print_inside_main_guard_is_exempt(self):
+        """A print() literally inside `if __name__ == "__main__":` is this
+        file's own CLI output, not a library leftover."""
+        source = (
+            "def do_work():\n"
+            "    return 1\n\n\n"
+            "if __name__ == '__main__':\n"
+            "    print(do_work())\n"
+        )
+        fm = python_analyzer.analyze("tool.py", source, _limits())
+        self.assertNotIn("print-in-library-code", {i.symbol for i in fm.issues})
+
+    def test_print_in_helper_only_called_from_main_guard_is_exempt(self):
+        """The exemption is file-scoped (does this file contain the guard
+        at all), not call-graph-traced -- a helper only ever invoked from
+        under the guard is exempt too."""
+        source = (
+            "def report(x):\n"
+            "    print(x)\n\n\n"
+            "def do_work():\n"
+            "    return 1\n\n\n"
+            "if __name__ == '__main__':\n"
+            "    report(do_work())\n"
+        )
+        fm = python_analyzer.analyze("tool.py", source, _limits())
+        self.assertNotIn("print-in-library-code", {i.symbol for i in fm.issues})
+
+    def test_print_in_test_file_is_exempt(self):
+        source = "def test_it():\n    print('debug')\n    assert True\n"
+        fm = python_analyzer.analyze("test_foo.py", source, _limits())
+        self.assertNotIn("print-in-library-code", {i.symbol for i in fm.issues})
+
+        fm2 = python_analyzer.analyze(os.path.join("tests", "foo.py"), source, _limits())
+        self.assertNotIn("print-in-library-code", {i.symbol for i in fm2.issues})
+
+    def test_print_under_examples_directory_is_exempt(self):
+        source = "def do_work():\n    print('demo output')\n"
+        fm = python_analyzer.analyze(os.path.join("examples", "demo.py"), source, _limits())
+        self.assertNotIn("print-in-library-code", {i.symbol for i in fm.issues})
+
+    def test_print_in_library_code_is_suppressible(self):
+        """codequality: ignore[print-in-library-code] should suppress the finding."""
+        source = "def do_work():\n    print('working')  # codequality: ignore[print-in-library-code]\n"
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "lib.py")
+            with open(path, "w") as f:
+                f.write(source)
+            fm = analyze_file(root, "lib.py", "python", Config({}))
+        self.assertNotIn("print-in-library-code", {i.symbol for i in fm.issues})
+        self.assertEqual(fm.suppressed_count, 1)
 
     def test_nested_function_does_not_inflate_parent_complexity(self):
         """A closure's branching should count toward its own complexity, not its parent's."""

@@ -168,6 +168,10 @@ codequality dependency-check .
 # refactoring targets (see "Hotspots" below)
 codequality hotspots .
 
+# Which files are both complex AND have no matching test file at all --
+# what to write a test for first (see "Complexity x test presence risk" below)
+codequality complexity-coverage-risk .
+
 # Env vars read in code vs. env vars documented in .env.example/README.md,
 # flagged in either direction (see "Environment variable drift" below)
 codequality env-check .
@@ -213,7 +217,7 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Twenty more subcommands, each documented in its own section below:
+Twenty-one more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ai-report`,
@@ -225,7 +229,10 @@ Twenty more subcommands, each documented in its own section below:
 since removed — see [Secrets in git history](#secrets-in-git-history)),
 `codequality large-files`, `codequality hotspots` (complexity crossed with
 change frequency — see
-[Hotspots](#hotspots-complexity-x-change-frequency)), and
+[Hotspots](#hotspots-complexity-x-change-frequency)),
+`codequality complexity-coverage-risk` (complexity crossed with structural
+test presence — see
+[Complexity x test presence risk](#complexity-x-test-presence-risk)), and
 `codequality api-diff` (public API comparison between any two git refs —
 see
 [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)).
@@ -1013,6 +1020,72 @@ other score in this tool.
 | `path` | Repo/directory root to analyze (default `.`) |
 | `--since REF` | Only count commits since this date/ref (`git --since` syntax) |
 | `--top N` | Max number of files to report (default 25) |
+
+## Complexity x test presence risk
+
+```bash
+codequality complexity-coverage-risk .
+codequality complexity-coverage-risk . --top 10
+codequality complexity-coverage-risk . --format json --output risk.json
+```
+
+`hotspots` (above) crosses complexity with *change frequency*.
+`complexity-coverage-risk` crosses the same complexity number with a
+different, simpler second axis: does this file have a corresponding test
+file at all? A highly complex file with zero tests anywhere is a much
+stronger risk signal than complexity alone -- nobody has so much as
+written a test for it -- and a much stronger signal than "untested" alone,
+since an untested-but-trivial file isn't much of a risk either. Crossing
+the two picks out the files most worth writing a test for first.
+
+This is deliberately **structural test presence**, not actual line
+coverage -- it never executes anything, so it can't tell you an existing
+test actually exercises the risky branches. That's a different, stronger
+claim, and it's what `--check-coverage` is for (opt-in, since it runs the
+target repo's own test suite -- see
+[Test coverage](#test-coverage-opt-in-executes-your-code)).
+`complexity-coverage-risk` stays in the same no-execution trust-boundary
+category as `hotspots`/`dependency-check`/`ownership`: it only reads file
+paths and parses source.
+
+For each non-test source file (test files themselves, per the same
+`test_*.py`/`*_test.py`/`tests/`-directory convention
+`codequality scaffold-properties` and the test-ratio-trend feature already
+use, are skipped -- they don't need a test of their own):
+
+- **`complexity`** -- the same "max cyclomatic complexity of any function
+  in the file" convention `hotspots` uses (see
+  [Hotspots](#hotspots-complexity-x-change-frequency) above for the full
+  reasoning). A file with no functions at all scores 0 and is never a risk.
+- **`has_test`** -- whether some file anywhere in the scanned repo looks
+  like a test for this one, by filename stem alone: `foo.py` counts as
+  tested if `test_foo.py` or `foo_test.py` exists anywhere in the scan, no
+  matter what directory either one lives in. Purely a filename
+  correspondence check -- no import-graph tracing, same "simple,
+  heuristic, expect some noise" tradeoff as every other check in this
+  tool.
+- **`risk_score`** -- `complexity` for a file with no matching test, `0`
+  for a file that has one (chosen over `None` so it sorts and formats like
+  every other numeric column here without special-casing; `has_test` stays
+  its own column precisely so a `0` risk score is never ambiguous with
+  "measured and found safe").
+
+Results are sorted by `risk_score` descending -- the prioritized "write a
+test for this first" list. Both raw signals (`complexity`, `has_test`)
+stay visible next to the composite score, same "auditable, not a black
+box" convention as `hotspots`/`scorer.py`. The text report only lists
+files with `complexity > 0` (a file with no functions can't be a risk, so
+it would only crowd out the files actually worth showing).
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to analyze (default `.`) |
+| `--config PATH` | Explicit config file (see [Configuration](#configuration)) |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
+| `--no-generic` | Only analyze Python; skip the analyzer for other languages |
+| `--top N` | Max number of files to report (default 25) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
 
 ## Environment variable drift
 

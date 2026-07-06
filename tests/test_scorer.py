@@ -2,7 +2,15 @@ import unittest
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue
 from codequality.config import Config
-from codequality.scorer import compute_scores, grade, score_correctness, score_coverage, score_security, score_style
+from codequality.scorer import (
+    compute_scores,
+    grade,
+    score_correctness,
+    score_coverage,
+    score_security,
+    score_structure,
+    score_style,
+)
 
 
 def _config():
@@ -108,6 +116,37 @@ class TestScorer(unittest.TestCase):
         partly = FileMetrics(path="b.py", language="python", total_lines=20, loc=20, coverage_ratio=0.5)
         self.assertEqual(score_coverage([fully]), 100.0)
         self.assertEqual(score_coverage([partly]), 50.0)
+
+    def test_god_file_does_not_penalize_a_file_at_the_limit(self):
+        limits = _config().limits
+        fm = FileMetrics(
+            path="a.py", language="python", total_lines=20, loc=20,
+            public_symbol_count=limits.max_public_symbols,
+        )
+        self.assertEqual(score_structure([], [fm], limits), 100.0)
+
+    def test_god_file_penalizes_a_file_over_the_limit(self):
+        limits = _config().limits
+        clean = FileMetrics(
+            path="clean.py", language="python", total_lines=20, loc=20,
+            public_symbol_count=limits.max_public_symbols,
+        )
+        messy = FileMetrics(
+            path="messy.py", language="python", total_lines=20, loc=20,
+            public_symbol_count=limits.max_public_symbols + 10,
+        )
+        self.assertEqual(score_structure([], [clean], limits), 100.0)
+        self.assertLess(score_structure([], [messy], limits), 100.0)
+
+    def test_god_file_penalty_is_capped(self):
+        """A wildly over-limit file's penalty caps out (like long-file's)
+        rather than driving the score below zero."""
+        limits = _config().limits
+        fm = FileMetrics(
+            path="a.py", language="python", total_lines=20, loc=20,
+            public_symbol_count=limits.max_public_symbols + 1000,
+        )
+        self.assertGreaterEqual(score_structure([], [fm], limits), 0.0)
 
     def test_deterministic_repeated_runs(self):
         """Running the same scorer input repeatedly must always yield the same score."""

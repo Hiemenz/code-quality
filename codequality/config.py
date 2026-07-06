@@ -79,6 +79,15 @@ DEFAULT_CONFIG = {
         "max_complexity": 10,
         "max_nesting": 4,
         "docstring_min_lines": 8,  # don't demand docstrings on tiny helpers
+        # Public top-level functions/classes a single file can define before
+        # it's flagged `god-file` (see python_analyzer.py). 15 is deliberately
+        # generous: a typical focused utility/helper module has a handful of
+        # public entry points (this repo's own analyzer modules mostly sit
+        # in the 1-6 range); 15 leaves plenty of headroom above that before
+        # treating a file as "doing too much," so normal modules stay silent
+        # and only files that actually bundle many unrelated responsibilities
+        # (several classes plus a pile of top-level helpers) get flagged.
+        "max_public_symbols": 15,
     },
     "thresholds": {
         "fail_under": 60,

@@ -278,7 +278,7 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Category | Default weight | What it measures |
 |---|---|---|
 | Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
-| Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
+| Structure | 10 | Function length, nesting depth, file length, "god files" (too many public top-level functions/classes crammed into one file — Python-only, see below), circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, stale docstrings that document a removed parameter, and Markdown code examples that no longer parse (reported, doesn't affect this category's score -- see below) |
 | Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
@@ -300,9 +300,10 @@ function. See `codequality/scorer.py` for the exact formulas; they're
 simple arithmetic on purpose, not a black box.
 
 Python-only checks (no equivalent yet for other languages): unused
-imports/variables, cross-file dead-code detection, `pickle`/`yaml.load`
-deserialization checks, assertion-free tests, broad exception-swallowing,
-stale-docstring parameters, unreachable code, and circular imports.
+imports/variables, cross-file dead-code detection, `god-file` detection,
+`pickle`/`yaml.load` deserialization checks, assertion-free tests, broad
+exception-swallowing, stale-docstring parameters, unreachable code, and
+circular imports.
 Hardcoded-secret and `eval`/`exec` detection run for every language via a
 line-level regex. Function-naming convention checks run for Python and,
 when the `tree-sitter` extra is
@@ -380,6 +381,39 @@ Pass `--include-generated` to `scan`/`diff` to score these files anyway, for
 anyone who disagrees with the auto-detection on their repo (or the same
 field, `include_generated = true`, in `.codequality.toml` -- see
 [Configuration](#configuration)).
+
+### God files: too many public responsibilities in one file
+
+`long-file` (above) only ever looks at raw line count, so a file can sit
+comfortably under `max_file_lines` while still cramming in far more
+unrelated public functions/classes than anyone should have to hold in
+their head at once — a different angle on "this file is doing too much."
+`god-file` catches that case: a file whose count of public top-level
+functions plus classes exceeds `max_public_symbols` (default 15, see
+`.codequality.toml`'s `[limits]` table) is flagged, reported under the
+Structure category at `warn` severity (unlike `long-file`'s `info`, since
+"too many things in one file" more directly predicts a harder-to-navigate
+module than "the file happens to be long").
+
+Counting follows the exact same "public top-level def/class" definition
+[cross-file dead code](#cross-file-dead-code) below already uses (a
+top-level `FunctionDef`/`AsyncFunctionDef`/`ClassDef` whose name doesn't
+start with `_`) -- but deliberately *without* that check's extra
+exemptions for `__all__`, dunders, test hooks, and decorated names, since
+those exist there to avoid mislabeling a *referenceable* name "dead," a
+different question from "how many things does this file define." A
+class's own methods are **not** recursed into and counted separately -- a
+class is one unit of responsibility no matter how many methods it has
+(each method's own length/nesting is already scored on its own via
+`long-function`/`deep-nesting`), so `god-file` stays at the same
+one-top-level-symbol-per-responsibility granularity `dead-code` uses.
+
+**Python-only in this first version**: an equivalent for tree-sitter
+-analyzed languages (JS/TS/Java/Go/...) would need a per-language notion of
+both "top-level" and "public" (e.g. `export`, capitalization, visibility
+keywords) added to `treesitter_analyzer.py`'s per-language tables -- a
+bigger lift than the mostly-language-agnostic Python `ast` check, so it's
+scoped out for now rather than half-built. See "Python-only checks" above.
 
 ### Cross-file dead code
 
@@ -1572,6 +1606,7 @@ max_file_lines = 600
 max_complexity = 10
 max_nesting = 4
 docstring_min_lines = 8   # don't demand docstrings on tiny helpers
+max_public_symbols = 15  # public top-level functions/classes before `god-file` fires (Python-only, see above)
 
 exclude = ["migrations/*", "vendor/*"]
 include_generic_languages = true

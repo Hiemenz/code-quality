@@ -53,7 +53,10 @@ def score_complexity(functions, limits):
 
 
 def score_structure(functions, file_metrics_list, limits):
-    """Score function length, nesting depth, and file length as one category."""
+    """Score function length, nesting depth, file length, and "god file"
+    (too many public top-level responsibilities in one file) as one
+    category.
+    """
     penalties = []
     for f in functions:
         p = 0.0
@@ -68,6 +71,15 @@ def score_structure(functions, file_metrics_list, limits):
         if fm.total_lines > limits.max_file_lines:
             over = fm.total_lines - limits.max_file_lines
             penalties.append(min(40.0, over * 0.05))
+        if fm.public_symbol_count > limits.max_public_symbols:
+            # Steeper per-unit penalty than long-file's per-*line* one above --
+            # one extra public top-level class/function is a much bigger jump
+            # in a file's surface area than one extra line, so it shouldn't
+            # take hundreds of them to matter. Same cap (40) and same "one
+            # more entry in the shared penalties list" shape as every other
+            # check in this function.
+            over = fm.public_symbol_count - limits.max_public_symbols
+            penalties.append(min(40.0, over * 3))
     if not penalties:
         return 100.0
     return _clamp(100 - sum(penalties) / len(penalties))

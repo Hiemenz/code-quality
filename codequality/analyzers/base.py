@@ -57,6 +57,10 @@ class FileMetrics:
     suppressed_count: int = 0
     coverage_ratio: float = None  # 0.0-1.0, or None if coverage wasn't measured for this file
     parse_error: str = None
+    # Count of public top-level functions/classes -- see `god-file` in
+    # python_analyzer.py. Stays 0 (not flagged) for non-Python files, since
+    # this check is Python-only for now -- see that module's docstring.
+    public_symbol_count: int = 0
 
 
 def is_public_name(name: str) -> bool:

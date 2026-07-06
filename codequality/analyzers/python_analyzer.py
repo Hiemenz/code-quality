@@ -41,6 +41,10 @@ if hasattr(ast, "TryStar"):
 
 _FUNC_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
+# The same top-level def/class node kinds dead_code.py's `_DEF_TYPES` counts,
+# for the `god-file` check below -- see `_count_public_top_level_symbols`.
+_TOP_LEVEL_DEF_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
 
 class _ComplexityVisitor(ast.NodeVisitor):
     """McCabe-style cyclomatic complexity, scoped to a single function body.
@@ -507,6 +511,37 @@ def _walk_tree(tree, path, limits, only_lines, fm):
             _process_other_node(node, path, only_lines, fm)
 
 
+def _count_public_top_level_symbols(tree):
+    """Count of public top-level functions/classes in `tree` -- the
+    `god-file` signal for "too many unrelated responsibilities in one
+    file," a different angle on file size than `long-file`'s raw line
+    count above.
+
+    Uses the exact same "public top-level def/class" definition
+    `dead_code.py`'s `_candidates` counts from (top-level
+    `FunctionDef`/`AsyncFunctionDef`/`ClassDef`, `is_public_name` for
+    "public"), deliberately *without* that function's additional
+    reference-counting exemptions (`__all__`, dunders, `test_*`/`Test*`
+    hooks, decorated). Those exemptions exist there to avoid calling a
+    name "dead" when it's actually reached by convention rather than a
+    direct reference -- a different question from the one asked here.
+    However a top-level class or function is invoked, it's still one more
+    top-level thing this file defines and a reader has to hold in their
+    head, which is exactly what `god-file` counts.
+
+    A class's own methods are deliberately not recursed into and counted
+    separately -- a class is one unit of responsibility regardless of how
+    many methods it has (its individual methods are already scored for
+    their own length/nesting via `_complexity_structure_issues`), the same
+    "one top-level symbol, one responsibility" granularity `dead_code.py`
+    uses for its own per-symbol reporting.
+    """
+    return sum(
+        1 for node in tree.body
+        if isinstance(node, _TOP_LEVEL_DEF_TYPES) and is_public_name(node.name)
+    )
+
+
 def _module_level_issues(tree, path, only_lines, check_imports):
     issues = (
         _unused_import_issues(tree, path, only_lines)
@@ -552,6 +587,14 @@ def analyze(path, source, limits, only_lines=None, check_imports=False):
     if total_lines > limits.max_file_lines and only_lines is None:
         msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"
         fm.issues.append(Issue(path, 1, "structure", "info", "long-file", msg))
+
+    fm.public_symbol_count = _count_public_top_level_symbols(tree)
+    if fm.public_symbol_count > limits.max_public_symbols and only_lines is None:
+        msg = (
+            f"File defines {fm.public_symbol_count} public top-level functions/classes "
+            f"(limit {limits.max_public_symbols})"
+        )
+        fm.issues.append(Issue(path, 1, "structure", "warn", "god-file", msg))
 
     line_issues, comment_lines = _line_checks(path, lines, limits.max_line_length, only_lines)
     fm.issues.extend(line_issues)

@@ -245,6 +245,59 @@ class TestPythonAnalyzer(unittest.TestCase):
         self.assertEqual(by_name["outer"].complexity, 1)
         self.assertEqual(by_name["inner"].complexity, 4)
 
+    def _module_with_n_public_defs(self, n):
+        return "\n\n".join(f"def public_{i}():\n    pass" for i in range(n)) + "\n"
+
+    def test_god_file_not_flagged_at_the_limit(self):
+        limits = _limits()
+        source = self._module_with_n_public_defs(limits.max_public_symbols)
+        fm = python_analyzer.analyze("f.py", source, limits)
+        self.assertEqual(fm.public_symbol_count, limits.max_public_symbols)
+        self.assertNotIn("god-file", {i.symbol for i in fm.issues})
+
+    def test_god_file_flagged_over_the_limit(self):
+        limits = _limits()
+        source = self._module_with_n_public_defs(limits.max_public_symbols + 1)
+        fm = python_analyzer.analyze("f.py", source, limits)
+        self.assertEqual(fm.public_symbol_count, limits.max_public_symbols + 1)
+        god_file_issues = [i for i in fm.issues if i.symbol == "god-file"]
+        self.assertEqual(len(god_file_issues), 1)
+        self.assertEqual(god_file_issues[0].category, "structure")
+        self.assertEqual(god_file_issues[0].severity, "warn")
+
+    def test_god_file_ignores_private_top_level_symbols(self):
+        limits = _limits()
+        source = "\n\n".join(f"def _private_{i}():\n    pass" for i in range(limits.max_public_symbols + 5)) + "\n"
+        fm = python_analyzer.analyze("f.py", source, limits)
+        self.assertEqual(fm.public_symbol_count, 0)
+        self.assertNotIn("god-file", {i.symbol for i in fm.issues})
+
+    def test_god_file_counts_decorated_top_level_symbols(self):
+        """Unlike dead_code.py's reference-counting exemptions, a decorator
+        doesn't remove a public top-level def/class from the god-file count
+        -- it's still one more thing the file defines."""
+        limits = _limits()
+        n = limits.max_public_symbols + 1
+        source = "\n\n".join(f"@staticmethod\ndef public_{i}():\n    pass" for i in range(n))
+        fm = python_analyzer.analyze("f.py", source, limits)
+        self.assertEqual(fm.public_symbol_count, limits.max_public_symbols + 1)
+
+    def test_god_file_counts_a_class_once_regardless_of_method_count(self):
+        limits = _limits()
+        methods = "\n".join(f"    def method_{i}(self):\n        pass\n" for i in range(30))
+        source = f"class Big:\n{methods}"
+        fm = python_analyzer.analyze("f.py", source, limits)
+        self.assertEqual(fm.public_symbol_count, 1)
+        self.assertNotIn("god-file", {i.symbol for i in fm.issues})
+
+    def test_god_file_not_flagged_in_diff_mode_scoped_lines(self):
+        """only_lines restricts to a diff's changed lines -- god-file, like
+        long-file, is a whole-file question and shouldn't fire there."""
+        limits = _limits()
+        source = self._module_with_n_public_defs(limits.max_public_symbols + 5)
+        fm = python_analyzer.analyze("f.py", source, limits, only_lines={1})
+        self.assertNotIn("god-file", {i.symbol for i in fm.issues})
+
 
 if __name__ == "__main__":
     unittest.main()

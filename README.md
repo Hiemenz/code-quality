@@ -177,6 +177,10 @@ codequality dependency-check .
 # list, NOT a staleness/CVE check (see "Dependency risk" below)
 codequality dependency-risk .
 
+# CI workflows/docker-compose files/Makefiles that reference a local script
+# or path that no longer exists (see "Orphaned config references" below)
+codequality orphaned-config .
+
 # Which files are both complex AND changed constantly -- the highest-risk
 # refactoring targets (see "Hotspots" below)
 codequality hotspots .
@@ -231,7 +235,7 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Twenty-one more subcommands, each documented in its own section below:
+Twenty-three more subcommands, each documented in its own section below:
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ai-report`,
@@ -242,6 +246,9 @@ Twenty-one more subcommands, each documented in its own section below:
 `codequality dependency-check`, `codequality dependency-risk` (usage count
 x `dependency-check`'s own structural flags — see [Dependency
 risk](#dependency-risk-usage-count-x-structural-risk-flags)),
+`codequality orphaned-config` (config files -- CI workflows/docker-
+compose/Makefiles -- that reference a local path that no longer exists,
+see [Orphaned config references](#orphaned-config-references)),
 `codequality env-check`,
 `codequality history-secrets` (secrets that were ever committed, even if
 since removed — see [Secrets in git history](#secrets-in-git-history)),
@@ -1211,6 +1218,61 @@ structural issue ranks above it only if its own score is higher.
 | `--config PATH` | Explicit config file (for `exclude`) |
 | `--exclude PATTERN` | Glob to exclude, repeatable |
 | `--top N` | Max number of packages to report (default 25) |
+
+## Orphaned config references
+
+```bash
+codequality orphaned-config .
+codequality orphaned-config . --format json
+```
+
+Same "structural consistency, not deep understanding" spirit as
+`dependency-check`, applied to config files instead of dependency
+manifests: rather than judging whether a CI job, a docker-compose
+service, or a Makefile target is still *wanted* -- too fuzzy, would need
+real understanding of intent -- this only checks the one thing that's
+unambiguous either way: does the config file reference a local file/path
+that no longer exists on disk. Three sources, each read independently:
+
+- **GitHub Actions workflows** (`.github/workflows/*.yml`/`*.yaml`) --
+  a `run:` step invoking a clear local script path, e.g.
+  `run: ./scripts/deploy.sh` or `run: bash scripts/deploy.sh`, where that
+  path doesn't exist relative to the repo root.
+- **docker-compose files** (`docker-compose*.yml`/`compose.yml` at the
+  repo root) -- a service's `build: context`/`build.dockerfile`
+  (combined, when both are present), a bind-mount `volumes:` entry
+  (`./local/path:/container/path`), or an `env_file:` entry, pointing at
+  a path that doesn't exist.
+- **Makefiles** (`Makefile`/`makefile` at the repo root) -- a target's
+  recipe line invoking a script via a clear relative path.
+
+Only clear, unambiguous relative paths are ever flagged: a leading
+`./`/`../`, or an interpreter keyword (`bash`/`python`/`node`/...)
+immediately followed by a path ending in a recognized script extension.
+A bare command (`pytest`), an absolute path, a URL, or anything
+containing a shell/CI variable expansion (`$FOO`, `${{ ... }}`) is
+silently skipped rather than guessed at -- a false positive here is worse
+than a missed one, since the whole point is a signal you can trust
+without re-deriving it yourself.
+
+No YAML (or Makefile) parser is used, even for the GitHub Actions case --
+see `codequality/orphaned_config.py`'s module docstring for the full
+reasoning. In short: the only structure this check needs out of a
+workflow file is "what shell commands appear under `run:` keys," which a
+few lines of indentation tracking answers directly without a hard new
+PyYAML dependency for a plain `pip install .` (contrast this with
+`--check-types`/`--check-coverage`, which *do* gate a real optional
+dependency behind an `AVAILABLE` flag, because those checks need the real
+thing -- mypy's type inference, coverage.py's instrumentation -- not just
+string extraction).
+
+Issues are reported `category="documentation"`, `severity="warn"`,
+`symbol="orphaned-config-reference"` -- like `dependency-check`, this is
+a standalone subcommand, not folded into `scan`'s score.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to check (default `.`) |
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 

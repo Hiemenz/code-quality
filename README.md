@@ -281,7 +281,7 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, stale docstrings that document a removed parameter, and Markdown code examples that no longer parse (reported, doesn't affect this category's score -- see below) |
-| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming |
+| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming, `print()` calls left in library code |
 | Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
 | Correctness | 15 | Always-on: assertion-free tests, unreachable code. Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
 | Coverage | 15 | Opt-in: line coverage from your own test suite (`--check-coverage`). 100 until you opt in — see [Test coverage](#test-coverage-opt-in-executes-your-code) |
@@ -302,7 +302,23 @@ simple arithmetic on purpose, not a black box.
 Python-only checks (no equivalent yet for other languages): unused
 imports/variables, cross-file dead-code detection, `pickle`/`yaml.load`
 deserialization checks, assertion-free tests, broad exception-swallowing,
-stale-docstring parameters, unreachable code, and circular imports.
+stale-docstring parameters, unreachable code, circular imports, and
+**`print-in-library-code`** — a `print(...)` call found anywhere in a
+Python file, `info` severity, since it's a heuristic. A common smell,
+especially in LLM-generated code that defaults to `print()` for
+debugging/status output instead of proper logging. Deliberately scoped
+to "no equivalent for other languages": what counts as a legitimate
+top-level print idiom vs. a debug leftover varies too much by language
+and logging convention to check generically. Exempted, since these are
+legitimate producers of terminal output rather than an accidental debug
+leftover: test files (same `tests/`/`test_*.py` convention as
+elsewhere), files under an `examples/`/`scripts/` directory, and —the
+main exemption in practice — any file containing a module-level `if
+__name__ == "__main__":` guard anywhere, a strong, simple signal that
+the file is a script/CLI entry point meant to be run directly rather
+than a library module imported by other code (this is why this tool's
+own `cli.py`, which legitimately prints its reports to the terminal,
+doesn't flood the self-scan with false positives).
 Hardcoded-secret and `eval`/`exec` detection run for every language via a
 line-level regex. Function-naming convention checks run for Python and,
 when the `tree-sitter` extra is

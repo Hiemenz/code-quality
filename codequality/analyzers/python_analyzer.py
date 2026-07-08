@@ -9,6 +9,7 @@ and formatting are not visible in the AST.
 
 import ast
 import importlib.util
+import os
 import re
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
@@ -18,6 +19,7 @@ from codequality.analyzers.python_security import security_issues
 from codequality.analyzers.python_test_quality import assertion_free_test_issues
 from codequality.analyzers.python_unreachable import unreachable_code_issues
 from codequality.analyzers.resource_lifecycle import resource_lifecycle_issues
+from codequality.property_scaffold import is_test_file
 
 TODO_RE = re.compile(r"#\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
 
@@ -280,6 +282,79 @@ def _unresolved_import_issues(tree, path, only_lines):
                 )
     return issues
 
+
+
+_SCRIPT_DIR_NAMES = {"examples", "example", "scripts", "script"}
+
+
+def _looks_like_script_path(path):
+    """A file living under an `examples/`/`scripts/` directory -- the
+    convention used elsewhere in this tool (see `is_test_file`) for "this
+    isn't ordinary library code" by path alone, without needing to parse
+    the file's content.
+    """
+    dirs = os.path.normpath(path).split(os.sep)[:-1]
+    return any(d.lower() in _SCRIPT_DIR_NAMES for d in dirs)
+
+
+def _is_dunder_name_main_pair(name_node, const_node):
+    return (
+        isinstance(name_node, ast.Name)
+        and name_node.id == "__name__"
+        and isinstance(const_node, ast.Constant)
+        and const_node.value == "__main__"
+    )
+
+
+def _is_dunder_main_test(test):
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
+        return False
+    left, right = test.left, test.comparators[0]
+    return _is_dunder_name_main_pair(left, right) or _is_dunder_name_main_pair(right, left)
+
+
+def _has_main_guard(tree):
+    """True if the module has a module-level `if __name__ == "__main__":`
+    guard anywhere in its top-level body -- a strong, simple signal that
+    this file is meant to be run directly (a script/CLI entry point) and
+    not imported as a library module. Deliberately scoped to "does the
+    file contain this guard at all" rather than tracing which functions
+    the guarded block calls into: simpler, and it exempts a script's
+    helper functions too (they exist only to be called from that guard),
+    without needing a call-graph analysis.
+    """
+    return any(isinstance(node, ast.If) and _is_dunder_main_test(node.test) for node in tree.body)
+
+
+def _print_call_issues(tree, path, only_lines):
+    """Flag `print(...)` calls left in library/module code -- a common
+    smell, especially in LLM-generated code that defaults to `print()`
+    for debugging/status output instead of proper logging. A real CLI
+    tool's own user-facing output is exempted via `_has_main_guard`
+    below, so this only fires on code that looks like it's meant to be
+    imported, not run directly.
+
+    Python-only, like several other checks in this tool (see the
+    "Python-only checks" list in the README): there's no single
+    cross-language equivalent worth checking generically here, since
+    what counts as a legitimate top-level "print" idiom vs. a debug
+    leftover varies a lot by language and logging convention.
+    """
+    if is_test_file(path) or _looks_like_script_path(path) or _has_main_guard(tree):
+        return []
+    issues = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            and _in_scope(node, only_lines)
+        ):
+            issues.append(
+                Issue(path, node.lineno, "style", "info", "print-in-library-code",
+                      "print() call in library code -- consider using logging instead")
+            )
+    return issues
 
 
 def _count_params(node):
@@ -569,6 +644,7 @@ def _module_level_issues(tree, path, only_lines, check_imports):
         + unreachable_code_issues(tree, path, only_lines)
         + resource_lifecycle_issues(tree, path, only_lines)
         + query_in_loop_issues(tree, path, only_lines)
+        + _print_call_issues(tree, path, only_lines)
     )
     if check_imports:
         issues += _unresolved_import_issues(tree, path, only_lines)

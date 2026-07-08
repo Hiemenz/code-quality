@@ -201,6 +201,24 @@ codequality history-secrets .
 # multi-MB binary blob into git? (see "Large/binary file check" below)
 codequality large-files . --max-size-mb 5
 
+# Sibling per-environment config files (.env variants, or a config/
+# directory) whose key sets don't match (see "Configuration drift" below)
+codequality config-drift .
+
+# Django/Alembic/raw-SQL migrations that can't be rolled back (see
+# "Migration reversibility check" below)
+codequality migration-check .
+
+# Age every feature-flag-looking reference via git blame -- flags whose
+# oldest reference is past --stale-days are cleanup candidates (see
+# "Feature flag aging" below)
+codequality feature-flags . --stale-days 180
+
+# Config-driven import-direction check across named layers -- a no-op
+# until [architecture].layers is configured (see "Architecture
+# conformance" below)
+codequality arch-conformance .
+
 # Full pipeline: your own format/lint/test commands, then codequality's
 # own scan, as one combined report + exit code (see "Pipeline" below)
 codequality pipeline .
@@ -281,9 +299,9 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, stale docstrings that document a removed parameter, and Markdown code examples that no longer parse (reported, doesn't affect this category's score -- see below) |
-| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming, `print()` calls left in library code |
+| Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, raising a new exception without chaining from the original, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming, `print()` calls left in library code |
 | Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
-| Correctness | 15 | Always-on: assertion-free tests, unreachable code. Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
+| Correctness | 15 | Always-on: assertion-free tests, unreachable code, unclosed resources (`open()`/`socket.socket()`/`urlopen()` never used as a context manager or explicitly closed), a query-shaped call inside a loop (N+1 pattern). Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
 | Coverage | 15 | Opt-in: line coverage from your own test suite (`--check-coverage`). 100 until you opt in — see [Test coverage](#test-coverage-opt-in-executes-your-code) |
 
 The first six categories are pure static analysis — the same "is this code
@@ -302,7 +320,8 @@ simple arithmetic on purpose, not a black box.
 Python-only checks (no equivalent yet for other languages): unused
 imports/variables, cross-file dead-code detection, `pickle`/`yaml.load`
 deserialization checks, assertion-free tests, broad exception-swallowing,
-stale-docstring parameters, unreachable code, circular imports, and
+lost exception chaining, stale-docstring parameters, unreachable code,
+unclosed resources, query-in-loop, circular imports, and
 **`print-in-library-code`** — a `print(...)` call found anywhere in a
 Python file, `info` severity, since it's a heuristic. A common smell,
 especially in LLM-generated code that defaults to `print()` for
@@ -319,6 +338,7 @@ the file is a script/CLI entry point meant to be run directly rather
 than a library module imported by other code (this is why this tool's
 own `cli.py`, which legitimately prints its reports to the terminal,
 doesn't flood the self-scan with false positives).
+
 Hardcoded-secret and `eval`/`exec` detection run for every language via a
 line-level regex. Function-naming convention checks run for Python and,
 when the `tree-sitter` extra is
@@ -329,7 +349,7 @@ constructors exempted. C, C++, and PHP are deliberately skipped here since
 real-world naming style in those languages is too mixed to check without
 a lot of noise.
 
-Four of the checks above are specifically aimed at judging whether code —
+Several of the checks above are specifically aimed at judging whether code —
 LLM-written or not — actually does what it claims, rather than just
 looking tidy:
 
@@ -354,6 +374,23 @@ looking tidy:
   `return`/`raise`/`continue`/`break` in the same block. Occasionally
   shows up in LLM output as a leftover branch after code that already
   unconditionally exits it.
+- **`unclosed-resource`** — `open()`/`socket.socket()`/`urlopen()` that is
+  neither used as a `with`/`async with` context manager nor explicitly
+  `.close()`d, returned, or passed to another call anywhere in the same
+  function. Conservative by design (see
+  `codequality/analyzers/resource_lifecycle.py`'s module docstring for
+  exactly which cases are excluded to keep false positives low).
+- **`query-in-loop`** — a database-looking call (Django `.objects.get`/
+  `.filter`/..., a SQLAlchemy `.session.query`/`.execute`, a DB-API
+  `.cursor.execute`, or a raw `conn`/`connection`/`db.execute`/`.query`)
+  sitting inside a `for`/`while` loop body — the N+1 query shape. Only
+  receiver patterns that are unambiguously DB-flavored are matched, so a
+  plain `dict.get()`/`list` call in a loop is not flagged.
+- **`lost-exception-context`** — an `except ... as e:` handler that raises
+  a brand-new exception without either explicit chaining
+  (`raise ... from e`) or referencing `e` anywhere in the new exception's
+  construction. A bare re-raise (`raise`) or re-raising the same bound
+  name (`raise e`) is not this pattern.
 
 ### Generated files are excluded from scoring
 
@@ -1506,6 +1543,187 @@ place, so there's no per-file score to attach it to.
 | `--format` | `text` (default) or `json` |
 | `--output FILE` | Write the report to a file instead of stdout |
 
+## Configuration drift
+
+```bash
+codequality config-drift .
+codequality config-drift . --format json
+```
+
+Flags sibling per-environment config files whose declared key sets don't
+match -- e.g. `.env.production` missing a key that `.env.example` has, or
+`config/production.yaml` missing a key that `config/dev.yaml` has. Two
+independent sources, each read independently:
+
+- **Root `.env` variants** (`.env`, `.env.example`, `.env.development`,
+  `.env.production`, ...) -- every `.env*` file directly at the repo
+  root, parsed as simple `KEY=value` lines (same parser `env-check`
+  uses). `.envrc` (direnv's shell-script config, a different format
+  entirely) is deliberately excluded even though it matches the `.env*`
+  glob.
+- **A `config`/`environments`/`envs` directory** at the repo root,
+  grouped by file extension (`.env`/`.yaml`/`.yml`/`.json`) so a
+  `dev.yaml` is only ever compared against other `.yaml` siblings, never
+  against an unrelated `.json` shape.
+
+Only key sets are ever compared, never values -- a rendered message may
+show a key name (`AWS_SECRET_ACCESS_KEY`), never the value behind it.
+There's deliberately no real YAML parser (same tradeoff
+`orphaned-config` makes): only top-level, zero-indent `key:` lines are
+extracted, so nested keys are invisible to this check. A group of fewer
+than two comparable files produces no issues.
+
+Issues are reported `category="documentation"`, `severity="warn"`,
+`symbol="config-drift"` -- standalone subcommand, not folded into
+`scan`'s score.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to check (default `.`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+## Migration reversibility check
+
+```bash
+codequality migration-check .
+codequality migration-check . --format json
+```
+
+Flags schema/data migrations that can't be rolled back, from three
+independent, unambiguous sources -- never executes a migration or
+connects to a database, everything comes from parsing the migration
+file's own source:
+
+- **Django migrations** -- a `migrations.RunPython(...)` call (inside a
+  `migrations/` directory) with no second positional argument and no
+  `reverse_code` keyword. Django raises `IrreversibleError` at rollback
+  time in exactly this situation. Passing `RunPython.noop` as the
+  reverse counts as reversible -- that's Django's own documented way to
+  declare "intentionally does nothing on the way back," a deliberate
+  choice this tool doesn't second-guess.
+- **Alembic migrations** -- any file with the alembic fingerprint
+  (top-level `revision =`/`down_revision =` assignments) that has no
+  `downgrade()` function at all, or one whose body is effectively empty
+  (`pass`/`...`/just its own docstring).
+- **Raw up/down SQL pairs** (the golang-migrate/similar convention) --
+  any `*.up.sql` file with no sibling `*.down.sql` in the same directory.
+
+A migration that's irreversible *on purpose* (some data transformations
+genuinely have no meaningful way back) will still be flagged -- this tool
+has no way to know intent, only structure -- so a flagged file may be a
+deliberate, accepted tradeoff rather than a mistake.
+
+Issues are reported `category="correctness"`, `severity="warn"`,
+symbols `irreversible-django-migration`/`alembic-downgrade-missing`/
+`alembic-downgrade-noop`/`sql-migration-missing-down` -- standalone
+subcommand, not folded into `scan`'s score.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to check (default `.`) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+## Feature flag aging
+
+```bash
+codequality feature-flags .
+codequality feature-flags . --stale-days 180 --format json
+```
+
+Same "age it via git blame" idea as `todo-age`/`dead-code-confidence`,
+applied to feature flags: finds flag-looking references/definitions
+across the codebase and reports how long each has been sitting there. A
+flag whose oldest reference predates `--stale-days` (default 180 -- a
+longer runway than `todo-age`'s 90-day default, reflecting that a flag
+typically needs a full release/rollout cycle before it's safe to remove)
+is a cleanup candidate: either it should have been fully rolled out and
+deleted by now, or it's effectively permanent configuration masquerading
+as a flag.
+
+Detection is a family of narrow, best-effort regexes -- there is no single
+standard shape for "check a feature flag" across LaunchDarkly/Split/
+Unleash/Django-waffle/home-grown dict lookups:
+
+- **A flag-check call** -- `is_enabled("x")`, `flag_enabled("x")`,
+  `feature_enabled("x")`, `flag_is_active(request, "x")`,
+  `switch_is_active("x")`, `is_active("x")` -- the first quoted string
+  literal anywhere in the parens is taken as the flag name, regardless of
+  which argument position a given SDK puts it in.
+- **A dict-like flag lookup** -- `FEATURE_FLAGS["x"]`, `flags.get("x")`.
+- **A boolean flag constant** -- `ENABLE_NEW_CHECKOUT = True` or
+  `NEW_CHECKOUT_ENABLED = False`.
+
+Expect noise, especially from the dict-lookup shape (a variable that
+merely contains "flag" in its name). This is an opt-in, best-effort
+signal, not a hard rule -- same posture as `env-check`. Requires a git
+repository (uses `git blame`); like `todo-age`, results are grouped by
+flag name with the oldest reference's age deciding staleness.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to scan (default `.`) |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
+| `--stale-days N` | Age in days after which a flag's oldest reference is flagged stale (default 180) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+## Architecture conformance
+
+```bash
+codequality arch-conformance .
+codequality arch-conformance . --format json
+```
+
+Config-driven import-direction check across named layers -- entirely
+opt-in, a no-op unless `[architecture].layers` is declared (see
+"Configuration" below). A layer is a name plus a list of dotted Python
+module prefixes it owns; the declared *order* is the rule -- a layer may
+import from itself or any layer declared *after* it, never one declared
+before it:
+
+```toml
+[[architecture.layers]]
+name = "api"
+modules = ["myapp.api"]
+
+[[architecture.layers]]
+name = "service"
+modules = ["myapp.service"]
+
+[[architecture.layers]]
+name = "data"
+modules = ["myapp.data", "myapp.models"]
+```
+
+With the layers above, `api` may import `service`/`data`, `service` may
+import `data`, but `data` importing anything from `service`/`api` is a
+violation, and so is `service` importing `api`.
+
+Deliberately does not resolve imports to actual files on disk -- that
+would need real package-resolution logic (`sys.path`, namespace packages,
+editable installs, ...). Instead, both a file's own layer and each
+import's layer are decided purely by dotted-name prefix matching against
+the file's own relative path (`myapp/service/orders.py` is module
+`myapp.service.orders`). Only absolute imports are resolvable this way; a
+relative import (`from . import x`) is silently skipped. A file whose own
+module name doesn't match any configured layer is skipped entirely --
+this check only ever judges files that were explicitly placed into a
+layer.
+
+Issues are reported `category="structure"`, `severity="warn"`,
+`symbol="layering-violation"` -- standalone subcommand, not folded into
+`scan`'s score.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to check (default `.`) |
+| `--config PATH` | Path to a `.codequality.toml`/`.json` config file |
+| `--exclude PATTERN` | Glob to exclude, repeatable |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
 ## Pipeline: one gate for format, lint, test, and codequality's own scan
 
 A full code-quality pipeline usually looks like: format check -> lint ->
@@ -1614,6 +1832,17 @@ command = "black --check ."
 [[pipeline.steps]]
 name = "lint"
 command = "ruff check ."
+
+# Named layers for `codequality arch-conformance` -- see "Architecture
+# conformance" above. Empty by default: entirely opt-in, this tool never
+# assumes a repo's layering.
+[[architecture.layers]]
+name = "api"
+modules = ["myapp.api"]
+
+[[architecture.layers]]
+name = "service"
+modules = ["myapp.service"]
 ```
 
 All fields are optional and merge over the built-in defaults.

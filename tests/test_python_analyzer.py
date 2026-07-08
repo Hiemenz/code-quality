@@ -192,6 +192,166 @@ class TestPythonAnalyzer(unittest.TestCase):
         fm = python_analyzer.analyze("f.py", source, _limits())
         self.assertNotIn("broad-except-swallow", {i.symbol for i in fm.issues})
 
+    def test_open_without_with_or_close_is_flagged(self):
+        source = "def f(path):\n    fh = open(path)\n    return fh.read()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_open_via_with_is_not_flagged(self):
+        source = "def f(path):\n    with open(path) as fh:\n        return fh.read()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_open_with_explicit_close_is_not_flagged(self):
+        source = "def f(path):\n    fh = open(path)\n    data = fh.read()\n    fh.close()\n    return data\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_open_returned_directly_is_not_flagged(self):
+        source = "def f(path):\n    return open(path)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_open_assigned_and_returned_is_not_flagged(self):
+        source = "def f(path):\n    fh = open(path)\n    return fh\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_open_passed_to_another_call_is_not_flagged(self):
+        source = "def f(path):\n    fh = open(path)\n    return json.load(fh)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_open_wrapped_by_contextlib_closing_is_not_flagged(self):
+        source = "def f(path):\n    with contextlib.closing(open(path)) as fh:\n        return fh.read()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_chained_open_without_assignment_is_flagged(self):
+        source = "def f(path):\n    return open(path).read()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_unrelated_call_named_open_on_other_object_is_not_flagged(self):
+        source = "def f(door):\n    door.open()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_chained_open_close_is_not_flagged(self):
+        source = "def f(path):\n    open(path, 'w').close()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_socket_socket_without_close_is_flagged(self):
+        source = "def f():\n    s = socket.socket()\n    s.connect(('x', 1))\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_django_manager_get_in_for_loop_is_flagged(self):
+        source = "def f(ids):\n    for i in ids:\n        Order.objects.get(pk=i)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_sqlalchemy_session_query_in_while_loop_is_flagged(self):
+        source = "def f():\n    while more():\n        self.session.query(User).all()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_cursor_execute_in_loop_is_flagged(self):
+        source = "def f(rows):\n    for r in rows:\n        self.cursor.execute('select 1')\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_raw_connection_execute_in_loop_is_flagged(self):
+        source = "def f(rows):\n    for r in rows:\n        conn.execute('select 1')\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_plain_dict_get_in_loop_is_not_flagged(self):
+        source = "def f(items):\n    for k in items:\n        cache.get(k)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_query_call_outside_any_loop_is_not_flagged(self):
+        source = "def f():\n    Order.objects.get(pk=1)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_query_in_nested_loop_is_reported_once(self):
+        source = "def f(xs, ys):\n    for x in xs:\n        for y in ys:\n            Order.objects.get(pk=y)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        matches = [i for i in fm.issues if i.symbol == "query-in-loop"]
+        self.assertEqual(len(matches), 1)
+
+    def test_query_call_inside_loop_local_helper_function_is_not_flagged(self):
+        source = (
+            "def f(ids):\n"
+            "    for i in ids:\n"
+            "        def helper():\n"
+            "            return Order.objects.get(pk=i)\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("query-in-loop", {i.symbol for i in fm.issues})
+
+    def test_new_exception_raised_without_chaining_is_flagged(self):
+        source = (
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as e:\n"
+            "        raise RuntimeError('bad value')\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("lost-exception-context", {i.symbol for i in fm.issues})
+
+    def test_new_exception_raised_with_explicit_from_is_not_flagged(self):
+        source = (
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as e:\n"
+            "        raise RuntimeError('bad value') from e\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("lost-exception-context", {i.symbol for i in fm.issues})
+
+    def test_new_exception_raised_with_explicit_from_none_is_not_flagged(self):
+        source = (
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as e:\n"
+            "        raise RuntimeError('bad value') from None\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("lost-exception-context", {i.symbol for i in fm.issues})
+
+    def test_new_exception_referencing_original_in_message_is_not_flagged(self):
+        source = (
+            "def f():\n"
+            "    try:\n"
+            "        risky()\n"
+            "    except ValueError as e:\n"
+            "        raise RuntimeError(str(e))\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("lost-exception-context", {i.symbol for i in fm.issues})
+
+    def test_bare_reraise_is_not_flagged_as_lost_context(self):
+        source = "def f():\n    try:\n        risky()\n    except ValueError as e:\n        raise\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("lost-exception-context", {i.symbol for i in fm.issues})
+
+    def test_reraise_same_name_is_not_flagged_as_lost_context(self):
+        source = "def f():\n    try:\n        risky()\n    except ValueError as e:\n        raise e\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("lost-exception-context", {i.symbol for i in fm.issues})
+
+    def test_except_without_bound_name_is_not_flagged_as_lost_context(self):
+        source = "def f():\n    try:\n        risky()\n    except ValueError:\n        raise RuntimeError('x')\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("lost-exception-context", {i.symbol for i in fm.issues})
+
     def test_stale_docstring_param_is_flagged(self):
         """A Google-style Args: entry for a removed parameter should be caught."""
         source = (

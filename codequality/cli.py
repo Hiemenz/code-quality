@@ -4,10 +4,11 @@ import os
 import sys
 
 from codequality import (
-    __version__, ai_report, api_diff, baseline as baseline_mod, churn, commit_lint, complexity_coverage_risk,
-    complexity_regression_diff, complexity_trend, dead_code_confidence, dependency_check, dependency_risk,
-    edit_distance, env_check, flakiness, hallucination_metrics, history_secrets, hotspots, large_files, mutation,
-    orphaned_config, ownership, pipeline, property_scaffold, todo_age,
+    __version__, ai_report, api_diff, arch_conformance, baseline as baseline_mod, churn, commit_lint,
+    complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, dead_code_confidence,
+    dependency_check, dependency_risk, edit_distance, env_check, feature_flags, flakiness, hallucination_metrics,
+    history_secrets, hotspots, large_files, migration_check, mutation, orphaned_config, ownership, pipeline,
+    property_scaffold, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
@@ -513,6 +514,59 @@ def _add_large_files_subparser(sub):
     lf_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_config_drift_subparser(sub):
+    cd_p = sub.add_parser(
+        "config-drift",
+        help="Compare key sets across sibling per-environment config files (.env variants, or a "
+             "config/environments/envs directory) and flag keys missing in one but present in a sibling"
+    )
+    cd_p.add_argument("path", nargs="?", default=".", help="Repo root to check (default: .)")
+    cd_p.add_argument("--format", choices=["text", "json"], default="text")
+    cd_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_migration_check_subparser(sub):
+    mc_p = sub.add_parser(
+        "migration-check",
+        help="Flag Django/Alembic/raw-SQL migrations that can't be rolled back (missing reverse_code, "
+             "an empty downgrade(), or a *.up.sql with no matching *.down.sql) -- structural only, "
+             "never connects to a database"
+    )
+    mc_p.add_argument("path", nargs="?", default=".", help="Repo root to check (default: .)")
+    mc_p.add_argument("--format", choices=["text", "json"], default="text")
+    mc_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_feature_flags_subparser(sub):
+    ff_p = sub.add_parser(
+        "feature-flags",
+        help="Age every feature-flag-looking reference/definition via git blame -- flags whose oldest "
+             "reference is past --stale-days are candidates for cleanup (best-effort idiom matching, see README)"
+    )
+    ff_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to scan (default: .)")
+    ff_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    ff_p.add_argument(
+        "--stale-days", type=int, default=feature_flags.DEFAULT_STALE_DAYS,
+        help=f"Age in days after which a flag's oldest reference is flagged stale "
+             f"(default: {feature_flags.DEFAULT_STALE_DAYS})"
+    )
+    ff_p.add_argument("--format", choices=["text", "json"], default="text")
+    ff_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_arch_conformance_subparser(sub):
+    ac_p = sub.add_parser(
+        "arch-conformance",
+        help="Config-driven import-direction check: flags a declared layer importing from an earlier "
+             "layer (see [architecture].layers in README) -- entirely opt-in, no-op without config"
+    )
+    ac_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to check (default: .)")
+    ac_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    ac_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    ac_p.add_argument("--format", choices=["text", "json"], default="text")
+    ac_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -545,6 +599,10 @@ def build_parser():
     _add_env_check_subparser(sub)
     _add_history_secrets_subparser(sub)
     _add_large_files_subparser(sub)
+    _add_config_drift_subparser(sub)
+    _add_migration_check_subparser(sub)
+    _add_feature_flags_subparser(sub)
+    _add_arch_conformance_subparser(sub)
     _add_ai_report_subparser(sub)
     _add_dead_code_confidence_subparser(sub)
 
@@ -1113,6 +1171,75 @@ def cmd_dead_code_confidence(args):
     return 0
 
 
+def cmd_config_drift(args):
+    """Handle `codequality config-drift`: flags key-set mismatches across
+    sibling per-environment config files. Purely structural (key names
+    only, values are never read into the report) -- see
+    codequality/config_drift.py.
+    """
+    root = os.path.abspath(args.path)
+    issues = config_drift.check(root)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = config_drift.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_migration_check(args):
+    """Handle `codequality migration-check`: flags Django/Alembic/raw-SQL
+    migrations that can't be rolled back. Never executes a migration or
+    connects to a database -- see codequality/migration_check.py.
+    """
+    root = os.path.abspath(args.path)
+    issues = migration_check.check(root)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = migration_check.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_feature_flags(args):
+    """Handle `codequality feature-flags`: ages every flag-looking
+    reference/definition via git blame -- see codequality/feature_flags.py.
+    """
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        occurrences = feature_flags.compute(root, stale_days=args.stale_days, exclude=args.exclude)
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    if args.format == "json":
+        groups = feature_flags.summarize(occurrences)
+        text = json.dumps({"flags": groups, "occurrences": occurrences}, indent=2)
+    else:
+        text = feature_flags.render_text(occurrences, args.stale_days)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_arch_conformance(args):
+    """Handle `codequality arch-conformance`: config-driven import-direction
+    check across declared layers. No-op without [architecture].layers
+    configured -- see codequality/arch_conformance.py.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    issues = arch_conformance.check(root, config)
+    if args.format == "json":
+        text = json.dumps([i.to_dict() for i in issues], indent=2)
+    else:
+        text = arch_conformance.render_text(issues)
+    _emit(text, args.output)
+    return 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -1139,6 +1266,10 @@ _COMMANDS = {
     "env-check": cmd_env_check,
     "history-secrets": cmd_history_secrets,
     "large-files": cmd_large_files,
+    "config-drift": cmd_config_drift,
+    "migration-check": cmd_migration_check,
+    "feature-flags": cmd_feature_flags,
+    "arch-conformance": cmd_arch_conformance,
     "ai-report": cmd_ai_report,
     "dead-code-confidence": cmd_dead_code_confidence,
 }

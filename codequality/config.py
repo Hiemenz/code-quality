@@ -105,6 +105,15 @@ DEFAULT_CONFIG = {
     "pipeline": {
         "steps": [],
     },
+    # Named layers for `codequality arch-conformance`, ordered highest-level
+    # first, e.g. [{"name": "api", "modules": ["myapp.api"]},
+    # {"name": "service", "modules": ["myapp.service"]}, ...]. A layer may
+    # import from itself or from any later layer, never an earlier one.
+    # Empty by default: entirely opt-in, this tool never assumes a repo's
+    # layering. See codequality/arch_conformance.py.
+    "architecture": {
+        "layers": [],
+    },
 }
 
 
@@ -142,6 +151,7 @@ class Config:
         self.test_command = merged["test_command"]
         self.include_generated = merged["include_generated"]
         self.pipeline_steps = [PipelineStep(s) for s in merged["pipeline"]["steps"]]
+        self.architecture_layers = merged["architecture"]["layers"]
 
     @classmethod
     def load(cls, root, explicit_path=None, overrides=None):

@@ -12,10 +12,12 @@ import importlib.util
 import re
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
+from codequality.analyzers.db_query_in_loop import query_in_loop_issues
 from codequality.analyzers.python_docstring_drift import docstring_drift_issues
 from codequality.analyzers.python_security import security_issues
 from codequality.analyzers.python_test_quality import assertion_free_test_issues
 from codequality.analyzers.python_unreachable import unreachable_code_issues
+from codequality.analyzers.resource_lifecycle import resource_lifecycle_issues
 
 TODO_RE = re.compile(r"#\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
 
@@ -463,6 +465,56 @@ def _check_broad_except_swallow(node, path, only_lines):
                  "Catches Exception/BaseException and silently discards it -- failures here vanish with no trace")
 
 
+class _RaiseCollector(ast.NodeVisitor):
+    """Every `raise` statement reachable from a node, stopping at nested
+    function/class boundaries -- same convention as `_AssignCollector`.
+    """
+
+    def __init__(self):
+        self.raises = []
+
+    def _stop(self, node):
+        return
+
+    visit_FunctionDef = _stop
+    visit_AsyncFunctionDef = _stop
+    visit_Lambda = _stop
+    visit_ClassDef = _stop
+
+    def visit_Raise(self, node):
+        self.raises.append(node)
+        self.generic_visit(node)
+
+
+def _check_lost_exception_context(node, path, only_lines):
+    """An `except ... as e:` handler that raises a brand-new exception
+    without either explicit chaining (`raise ... from e`) or referencing
+    `e` anywhere in the new exception's construction loses the original
+    cause -- the traceback/message that would have said *why* it failed is
+    gone. A bare re-raise (`raise`) or re-raising the same bound name
+    (`raise e`) is not this pattern; those are deliberate and keep the
+    original exception intact.
+    """
+    if not isinstance(node, ast.ExceptHandler) or node.name is None or not _in_scope(node, only_lines):
+        return None
+    collector = _RaiseCollector()
+    collector.generic_visit(node)
+    for raise_node in collector.raises:
+        if raise_node.exc is None or raise_node.cause is not None:
+            continue
+        if isinstance(raise_node.exc, ast.Name) and raise_node.exc.id == node.name:
+            continue
+        names_used = {n.id for n in ast.walk(raise_node.exc) if isinstance(n, ast.Name)}
+        if node.name in names_used:
+            continue
+        return Issue(
+            path, raise_node.lineno, "style", "warn", "lost-exception-context",
+            f"Raises a new exception here without chaining from '{node.name}' "
+            f"(add 'from {node.name}' or reference it in the new exception)"
+        )
+    return None
+
+
 def _check_star_import(node, path, only_lines):
     if not isinstance(node, ast.ImportFrom) or not _in_scope(node, only_lines):
         return None
@@ -479,7 +531,10 @@ def _check_class_name(node, path, only_lines):
     return Issue(path, node.lineno, "style", "info", "bad-class-name", f"Class '{node.name}' should be PascalCase")
 
 
-_OTHER_NODE_CHECKS = (_check_bare_except, _check_broad_except_swallow, _check_star_import, _check_class_name)
+_OTHER_NODE_CHECKS = (
+    _check_bare_except, _check_broad_except_swallow, _check_lost_exception_context, _check_star_import,
+    _check_class_name,
+)
 
 
 def _process_other_node(node, path, only_lines, fm):
@@ -512,6 +567,8 @@ def _module_level_issues(tree, path, only_lines, check_imports):
         _unused_import_issues(tree, path, only_lines)
         + security_issues(tree, path, only_lines)
         + unreachable_code_issues(tree, path, only_lines)
+        + resource_lifecycle_issues(tree, path, only_lines)
+        + query_in_loop_issues(tree, path, only_lines)
     )
     if check_imports:
         issues += _unresolved_import_issues(tree, path, only_lines)

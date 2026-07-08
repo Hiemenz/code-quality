@@ -113,6 +113,7 @@ def score_style(file_metrics_list):
         "todo-marker": 0.5,
         "bare-except": 4,
         "broad-except-swallow": 4,
+        "lost-exception-context": 4,
         "star-import": 3,
         "mutable-default-arg": 4,
         "unused-import": 2,
@@ -166,6 +167,8 @@ def score_correctness(file_metrics_list):
         "type-error": 12,
         "assertion-free-test": 6,
         "unreachable-code": 8,
+        "unclosed-resource": 10,
+        "query-in-loop": 8,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:

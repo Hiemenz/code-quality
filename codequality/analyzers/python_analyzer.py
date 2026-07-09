@@ -12,6 +12,7 @@ import importlib.util
 import os
 import re
 
+from codequality.analyzers.async_await import unawaited_coroutine_issues
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
 from codequality.analyzers.db_query_in_loop import query_in_loop_issues
 from codequality.analyzers.python_docstring_drift import docstring_drift_issues
@@ -644,6 +645,7 @@ def _module_level_issues(tree, path, only_lines, check_imports):
         + unreachable_code_issues(tree, path, only_lines)
         + resource_lifecycle_issues(tree, path, only_lines)
         + query_in_loop_issues(tree, path, only_lines)
+        + unawaited_coroutine_issues(tree, path, only_lines)
         + _print_call_issues(tree, path, only_lines)
     )
     if check_imports:

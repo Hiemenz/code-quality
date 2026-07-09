@@ -115,6 +115,55 @@ class TestPythonAnalyzer(unittest.TestCase):
         fm = python_analyzer.analyze("f.py", source, _limits())
         self.assertNotIn("hardcoded-secret", {i.symbol for i in fm.issues})
 
+    def test_fstring_sql_query_is_flagged_as_injection_risk(self):
+        source = "def f(cursor, name):\n    cursor.execute(f\"SELECT * FROM users WHERE name = '{name}'\")\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        found = [i for i in fm.issues if i.symbol == "sql-injection-risk"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].category, "security")
+
+    def test_percent_formatted_sql_query_is_flagged_as_injection_risk(self):
+        source = "def f(cursor, name):\n    cursor.execute('SELECT * FROM users WHERE name = %s' % name)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("sql-injection-risk", {i.symbol for i in fm.issues})
+
+    def test_concatenated_sql_query_is_flagged_as_injection_risk(self):
+        source = "def f(cursor, name):\n    cursor.execute('SELECT * FROM users WHERE name = ' + name)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("sql-injection-risk", {i.symbol for i in fm.issues})
+
+    def test_dot_format_sql_query_is_flagged_as_injection_risk(self):
+        source = "def f(cursor, name):\n    cursor.execute('SELECT * FROM users WHERE name = {}'.format(name))\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("sql-injection-risk", {i.symbol for i in fm.issues})
+
+    def test_parameterized_sql_query_is_not_flagged(self):
+        source = "def f(cursor, name):\n    cursor.execute('SELECT * FROM users WHERE name = %s', (name,))\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("sql-injection-risk", {i.symbol for i in fm.issues})
+
+    def test_plain_string_literal_sql_query_is_not_flagged(self):
+        source = "def f(cursor):\n    cursor.execute('SELECT * FROM users')\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("sql-injection-risk", {i.symbol for i in fm.issues})
+
+    def test_logging_a_secret_looking_variable_is_flagged(self):
+        source = "def f(password):\n    logger.info('login with %s', password)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        found = [i for i in fm.issues if i.symbol == "sensitive-data-logging"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].category, "security")
+
+    def test_print_of_a_secret_looking_variable_is_flagged(self):
+        source = "def f(api_key):\n    print(api_key)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("sensitive-data-logging", {i.symbol for i in fm.issues})
+
+    def test_logging_an_unrelated_variable_is_not_flagged(self):
+        source = "def f(username):\n    logger.info('login: %s', username)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("sensitive-data-logging", {i.symbol for i in fm.issues})
+
     def test_bad_function_and_class_names_are_flagged(self):
         source = "def BadName():\n    pass\n\n\nclass lowercase_class:\n    pass\n"
         fm = python_analyzer.analyze("f.py", source, _limits())
@@ -248,6 +297,63 @@ class TestPythonAnalyzer(unittest.TestCase):
         source = "def f():\n    s = socket.socket()\n    s.connect(('x', 1))\n"
         fm = python_analyzer.analyze("f.py", source, _limits())
         self.assertIn("unclosed-resource", {i.symbol for i in fm.issues})
+
+    def test_unawaited_coroutine_call_is_flagged(self):
+        source = "async def fetch():\n    pass\n\n\nasync def run():\n    fetch()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_awaited_coroutine_call_is_not_flagged(self):
+        source = "async def fetch():\n    pass\n\n\nasync def run():\n    await fetch()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_coroutine_scheduled_via_create_task_is_not_flagged(self):
+        source = (
+            "async def fetch():\n    pass\n\n\n"
+            "async def run():\n    asyncio.create_task(fetch())\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_coroutine_passed_to_gather_is_not_flagged(self):
+        source = (
+            "async def fetch():\n    pass\n\n\n"
+            "async def run():\n    await asyncio.gather(fetch(), fetch())\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_coroutine_returned_directly_is_not_flagged(self):
+        source = "async def fetch():\n    pass\n\n\ndef make():\n    return fetch()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_coroutine_assigned_and_later_awaited_is_not_flagged(self):
+        source = (
+            "async def fetch():\n    pass\n\n\n"
+            "async def run():\n    coro = fetch()\n    await coro\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_coroutine_assigned_and_never_awaited_is_flagged(self):
+        source = (
+            "async def fetch():\n    pass\n\n\n"
+            "async def run():\n    coro = fetch()\n    print('scheduled')\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_asyncio_run_entrypoint_is_not_flagged(self):
+        source = "async def main():\n    pass\n\n\nasyncio.run(main())\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
+
+    def test_file_with_no_async_defs_is_never_flagged(self):
+        source = "def f():\n    g()\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("unawaited-coroutine", {i.symbol for i in fm.issues})
 
     def test_django_manager_get_in_for_loop_is_flagged(self):
         source = "def f(ids):\n    for i in ids:\n        Order.objects.get(pk=i)\n"

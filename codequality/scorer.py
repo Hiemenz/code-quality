@@ -139,8 +139,10 @@ def score_security(file_metrics_list):
         "dangerous-eval": 15,
         "shell-true": 15,
         "hardcoded-secret": 20,
+        "sql-injection-risk": 20,
         "unsafe-deserialization": 10,
         "unsafe-yaml-load": 8,
+        "sensitive-data-logging": 8,
         "shell-exec": 6,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
@@ -169,6 +171,7 @@ def score_correctness(file_metrics_list):
         "unreachable-code": 8,
         "unclosed-resource": 10,
         "query-in-loop": 8,
+        "unawaited-coroutine": 12,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:

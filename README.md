@@ -300,8 +300,8 @@ Eight categories, each 0-100, combined by weight into the overall score:
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, stale docstrings that document a removed parameter, and Markdown code examples that no longer parse (reported, doesn't affect this category's score -- see below) |
 | Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, raising a new exception without chaining from the original, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming, `print()` calls left in library code |
-| Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets |
-| Correctness | 15 | Always-on: assertion-free tests, unreachable code, unclosed resources (`open()`/`socket.socket()`/`urlopen()` never used as a context manager or explicitly closed), a query-shaped call inside a loop (N+1 pattern). Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
+| Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets, SQL built via string interpolation instead of parameters, logging a secret-looking variable |
+| Correctness | 15 | Always-on: assertion-free tests, unreachable code, unclosed resources (`open()`/`socket.socket()`/`urlopen()` never used as a context manager or explicitly closed), a query-shaped call inside a loop (N+1 pattern), a local async function called without awaiting/scheduling it. Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
 | Coverage | 15 | Opt-in: line coverage from your own test suite (`--check-coverage`). 100 until you opt in — see [Test coverage](#test-coverage-opt-in-executes-your-code) |
 
 The first six categories are pure static analysis — the same "is this code
@@ -321,7 +321,8 @@ Python-only checks (no equivalent yet for other languages): unused
 imports/variables, cross-file dead-code detection, `pickle`/`yaml.load`
 deserialization checks, assertion-free tests, broad exception-swallowing,
 lost exception chaining, stale-docstring parameters, unreachable code,
-unclosed resources, query-in-loop, circular imports, and
+unclosed resources, query-in-loop, unawaited coroutines, SQL-injection-
+shaped queries, sensitive-data logging, circular imports, and
 **`print-in-library-code`** — a `print(...)` call found anywhere in a
 Python file, `info` severity, since it's a heuristic. A common smell,
 especially in LLM-generated code that defaults to `print()` for
@@ -391,6 +392,27 @@ looking tidy:
   (`raise ... from e`) or referencing `e` anywhere in the new exception's
   construction. A bare re-raise (`raise`) or re-raising the same bound
   name (`raise e`) is not this pattern.
+- **`unawaited-coroutine`** — a call to a locally-defined `async def`
+  function/method whose result is never `await`ed, scheduled
+  (`asyncio.create_task`/`gather`/...), returned, or assigned to a name
+  that's later awaited/scheduled. A purely syntactic, very common
+  real-world bug — the coroutine object is created but its body never
+  actually runs. Matches by the call's last dotted segment only (`foo` for
+  both `foo()` and `self.foo()`), since this tool has no type information
+  to know which class `self` actually is.
+- **`sql-injection-risk`** — `cursor.execute(...)`/`.executemany(...)`/
+  Django's `QuerySet.raw(...)` called with exactly one argument that's a
+  Python-formatted string (f-string interpolation, `%`/`+`, or
+  `.format()`) instead of a query string plus parameters passed
+  separately. The safe, parameterized form
+  (`execute("... WHERE x=%s", (value,))`) is not flagged — it's the
+  second, separate argument that matters, not whether the query text
+  itself contains a placeholder.
+- **`sensitive-data-logging`** — a `logger.<level>(...)`/`print(...)` call
+  that references a variable whose *name* looks like a secret (same
+  `SECRET_NAME_RE` used for `hardcoded-secret`). Logging a credential is a
+  common way secrets leak into log aggregators/terminals even when the
+  value itself is never hardcoded anywhere.
 
 ### Generated files are excluded from scoring
 

@@ -11,9 +11,31 @@ path -- see README for the roadmap on closing this gap.
 import re
 
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue
+from codequality.analyzers.placeholder_code import PLACEHOLDER_COMMENT_RE
 from codequality.analyzers.secrets import SECRET_ASSIGN_RE, is_placeholder
 
 TODO_RE = re.compile(r"(//|#|/\*)\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
+
+# Standalone comment line in any supported language: //, #, /* ... */, a
+# mid-block-comment continuation `*`, or SQL/Haskell-style `--`.
+_COMMENT_START_RE = re.compile(r"^\s*(//|#|/\*|\*|--)")
+
+# "This is a stub" idioms, per language, matched line-level (there's no
+# parser here to see function bodies): C#'s NotImplementedException, Java's
+# no-message UnsupportedOperationException, a JS `throw new Error('not
+# implemented')`, Go's panic("not implemented"), Ruby's raise
+# NotImplementedError. Rust's `unimplemented!()`/`todo!()` and Kotlin's
+# `TODO()` are matched case-sensitively in a second pattern so a
+# user-defined `todo()` helper in a case-insensitive world doesn't trip it.
+_NOT_IMPLEMENTED_RE = re.compile(
+    r"throw\s+new\s+NotImplementedException"
+    r"|throw\s+new\s+UnsupportedOperationException\s*\(\s*\)"
+    r"|throw\s+new\s+Error\s*\(\s*['\"][^'\"]*not\s+implemented"
+    r"|panic\s*\(\s*\"[^\"]*not\s+implemented"
+    r"|\braise\s+NotImplementedError\b",
+    re.IGNORECASE,
+)
+_NOT_IMPLEMENTED_CS_RE = re.compile(r"\b(?:unimplemented|todo)!\s*\(\)|\bTODO\s*\(\s*\)")
 
 LINE_COMMENT_PREFIXES = {
     "javascript": "//",
@@ -79,6 +101,17 @@ def _scan_line(path, i, raw, comment_prefix, limits):
         issues.append(Issue(path, i, "style", "info", "trailing-whitespace", "Trailing whitespace"))
     if TODO_RE.search(stripped):
         issues.append(Issue(path, i, "style", "info", "todo-marker", stripped.strip()[:120]))
+    if _COMMENT_START_RE.match(stripped) and PLACEHOLDER_COMMENT_RE.search(stripped):
+        issues.append(
+            Issue(path, i, "correctness", "warn", "placeholder-comment",
+                  f"Placeholder comment where real code should be: {stripped.strip()[:100]}")
+        )
+    elif not is_comment and (_NOT_IMPLEMENTED_RE.search(stripped) or _NOT_IMPLEMENTED_CS_RE.search(stripped)):
+        issues.append(
+            Issue(path, i, "correctness", "info", "stub-implementation",
+                  "Not-implemented stub -- this code path crashes if reached "
+                  "(info: without a parser, an intentionally-abstract member can't be told apart)")
+        )
     issues.extend(_security_line_issues(path, i, stripped))
 
     return issues, is_comment, _indent_level(raw), len(DECISION_KEYWORDS.findall(stripped))

@@ -166,12 +166,20 @@ def score_correctness(file_metrics_list):
     """
     weights = {
         "unresolved-import": 20,
+        "unresolved-attribute": 12,
+        "unresolved-internal-import": 15,
+        "unresolved-internal-attribute": 6,
         "type-error": 12,
         "assertion-free-test": 6,
+        "tautological-test": 6,
+        "mock-only-test": 3,
         "unreachable-code": 8,
         "unclosed-resource": 10,
         "query-in-loop": 8,
         "unawaited-coroutine": 12,
+        "stub-implementation": 5,
+        "placeholder-comment": 8,
+        "deprecated-api": 4,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:

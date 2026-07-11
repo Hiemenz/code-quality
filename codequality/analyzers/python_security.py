@@ -10,6 +10,7 @@ import ast
 
 from codequality.analyzers.base import Issue
 from codequality.analyzers.secrets import SECRET_NAME_RE, is_placeholder
+from codequality.property_scaffold import is_test_file
 
 _SHELL_CALLS = {"subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_call",
                 "subprocess.check_output"}
@@ -23,6 +24,12 @@ _DANGEROUS_CALLS = {
                      "pickle.load() can execute arbitrary code from untrusted input"),
     "pickle.loads": ("unsafe-deserialization", "warn",
                       "pickle.loads() can execute arbitrary code from untrusted input"),
+    "hashlib.md5": ("weak-hash", "warn",
+                    "MD5 is cryptographically broken -- use hashlib.sha256() or better for security purposes"),
+    "hashlib.sha1": ("weak-hash", "warn",
+                     "SHA-1 is cryptographically broken -- use hashlib.sha256() or better for security purposes"),
+    "tempfile.mktemp": ("insecure-tempfile", "warn",
+                        "tempfile.mktemp() has a TOCTOU race condition -- use mkstemp() or NamedTemporaryFile() instead"),
 }
 
 
@@ -185,6 +192,24 @@ def _hardcoded_secret_issue(node, path):
 
 
 _CALL_CHECKS = (_security_call_issue, _sql_injection_issue, _sensitive_logging_issue)
+
+
+def assert_validation_issues(tree, path, only_lines):
+    """Flag assert statements outside test files: assert is silently stripped
+    when Python runs with -O (optimised mode), so any validation that relies on
+    it vanishes in production. Use an explicit `if not ...: raise` instead.
+    """
+    if is_test_file(path):
+        return []
+    issues = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assert) and _in_scope(node, only_lines):
+            issues.append(Issue(
+                path, node.lineno, "correctness", "info", "assert-as-validation",
+                "assert is disabled by 'python -O' and cannot be relied on for validation "
+                "-- use an explicit if/raise instead"
+            ))
+    return issues
 
 
 def security_issues(tree, path, only_lines):

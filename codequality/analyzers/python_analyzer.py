@@ -15,11 +15,31 @@ import re
 from codequality.analyzers.async_await import unawaited_coroutine_issues
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
 from codequality.analyzers.db_query_in_loop import query_in_loop_issues
+from codequality.analyzers.deprecated_api import deprecated_api_issues
+from codequality.analyzers.placeholder_code import placeholder_comment_issues, stub_implementation_issues
 from codequality.analyzers.python_docstring_drift import docstring_drift_issues
-from codequality.analyzers.python_security import security_issues
-from codequality.analyzers.python_test_quality import assertion_free_test_issues
+from codequality.analyzers.python_idioms import (
+    boolean_trap_issues,
+    comparison_idiom_issues,
+    f_string_no_placeholder_issues,
+    long_lambda_issues,
+    magic_number_issues,
+    mutable_class_attribute_issues,
+    nested_comprehension_issues,
+    redundant_else_issues,
+    shadowed_builtin_issues,
+)
+from codequality.analyzers.python_loop_perf import string_concat_in_loop_issues
+from codequality.analyzers.python_token_checks import implicit_string_concat_issues
+from codequality.analyzers.python_security import assert_validation_issues, security_issues
+from codequality.analyzers.python_test_quality import (
+    assertion_free_test_issues,
+    mock_only_test_issues,
+    tautological_test_issues,
+)
 from codequality.analyzers.python_unreachable import unreachable_code_issues
 from codequality.analyzers.resource_lifecycle import resource_lifecycle_issues
+from codequality.analyzers.stdlib_attrs import stdlib_attribute_issues
 from codequality.property_scaffold import is_test_file
 
 TODO_RE = re.compile(r"#\s*(TODO|FIXME|XXX|HACK)\b", re.IGNORECASE)
@@ -45,6 +65,26 @@ if hasattr(ast, "TryStar"):
     _COMPOUND_TYPES = _COMPOUND_TYPES + (ast.TryStar,)
 
 _FUNC_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+class _ReturnCounter(ast.NodeVisitor):
+    """Count return statements in a function body, not descending into nested
+    functions/classes (they are scored on their own).
+    """
+
+    def __init__(self):
+        self.count = 0
+
+    def _stop(self, node):
+        return
+
+    visit_FunctionDef = _stop
+    visit_AsyncFunctionDef = _stop
+    visit_ClassDef = _stop
+
+    def visit_Return(self, node):
+        self.count += 1
+        self.generic_visit(node)
 
 
 class _ComplexityVisitor(ast.NodeVisitor):
@@ -103,6 +143,84 @@ class _ComplexityVisitor(ast.NodeVisitor):
 
     def visit_Match(self, node):
         self.complexity += max(0, len(node.cases) - 1)
+        self.generic_visit(node)
+
+
+class _CognitiveVisitor(ast.NodeVisitor):
+    """Sonar-style *cognitive* complexity, scoped to a single function body.
+
+    McCabe (above) counts branch points, so a flat 10-arm `elif` chain and
+    five levels of nested `if`s score the same -- but they are nothing
+    alike to read. Cognitive complexity weights by nesting: each
+    `if`/`for`/`while`/`except`/ternary costs 1 *plus the depth it sits
+    at*, so deeply nested logic scores much higher than the same number of
+    branches laid out flat. This is a simplified, documented subset of
+    Sonar's published spec:
+
+    - `if`/`for`/`while`/`except` handler/ternary (`IfExp`): +1 + current
+      nesting depth; their bodies are visited one level deeper.
+    - `elif` and `else`: flat +1 each, no nesting penalty, exactly per
+      Sonar's spec -- an `elif` chain must cost linearly, not
+      quadratically, or a 7-arm dispatch chain scores like a disaster.
+      (`elif` is an `If` as the sole statement of `orelse` in the AST;
+      a hand-written `else: if ...:` on separate lines is
+      indistinguishable and gets the same flat price -- the reader reads
+      them nearly identically anyway.)
+    - each `and`/`or` chain (`BoolOp` node): +1, nesting-independent.
+    - nested `def`/`class`/`lambda` stop the walk -- they're scored on
+      their own, same convention as `_ComplexityVisitor`.
+
+    Recursion (+1 in Sonar's spec) is skipped: detecting it needs name
+    resolution this tool deliberately doesn't do.
+    """
+
+    def __init__(self):
+        self.cognitive = 0
+        self._depth = 0
+
+    def _stop(self, node):
+        return
+
+    visit_FunctionDef = _stop
+    visit_AsyncFunctionDef = _stop
+    visit_Lambda = _stop
+    visit_ClassDef = _stop
+
+    def _nested(self, node):
+        self.cognitive += 1 + self._depth
+        self._depth += 1
+        self.generic_visit(node)
+        self._depth -= 1
+
+    visit_For = _nested
+    visit_AsyncFor = _nested
+    visit_While = _nested
+    visit_ExceptHandler = _nested
+    visit_IfExp = _nested
+
+    def visit_If(self, node):
+        self.cognitive += 1 + self._depth
+        self._if_branches(node)
+
+    def _if_branches(self, node):
+        self.visit(node.test)  # BoolOps in the condition still count
+        self._depth += 1
+        for stmt in node.body:
+            self.visit(stmt)
+        self._depth -= 1
+        orelse = node.orelse
+        if len(orelse) == 1 and isinstance(orelse[0], ast.If):
+            self.cognitive += 1  # elif: flat, no nesting penalty
+            self._if_branches(orelse[0])
+        elif orelse:
+            self.cognitive += 1  # else: flat, no nesting penalty
+            self._depth += 1
+            for stmt in orelse:
+                self.visit(stmt)
+            self._depth -= 1
+
+    def visit_BoolOp(self, node):
+        self.cognitive += 1
         self.generic_visit(node)
 
 
@@ -430,6 +548,8 @@ def _build_function_metrics(node, path):
     cv.generic_visit(node)
     nv = _NestingVisitor()
     nv.generic_visit(node)
+    cogv = _CognitiveVisitor()
+    cogv.generic_visit(node)
 
     return FunctionMetrics(
         file=path,
@@ -442,6 +562,7 @@ def _build_function_metrics(node, path):
         params=_count_params(node),
         has_docstring=ast.get_docstring(node) is not None,
         is_public=is_public_name(node.name),
+        cognitive=cogv.cognitive,
     )
 
 
@@ -463,11 +584,37 @@ def _complexity_structure_issues(fn, path, limits):
             Issue(path, fn.lineno, "structure", "warn", "deep-nesting",
                   f"Function '{fn.name}' nests {fn.nesting} levels deep (limit {limits.max_nesting})")
         )
+    max_cognitive = getattr(limits, "max_cognitive", 15)
+    if fn.cognitive > max_cognitive:
+        severity = "error" if fn.cognitive > max_cognitive * 2 else "warn"
+        issues.append(
+            Issue(path, fn.lineno, "complexity", severity, "high-cognitive-complexity",
+                  f"Function '{fn.name}' has cognitive complexity {fn.cognitive} (limit {max_cognitive}) -- "
+                  f"nesting-weighted, so flattening the deepest branches helps most")
+        )
+    max_params = getattr(limits, "max_params", 6)
+    if fn.params > max_params:
+        issues.append(
+            Issue(path, fn.lineno, "structure", "info", "too-many-params",
+                  f"Function '{fn.name}' takes {fn.params} parameters (limit {max_params}) -- "
+                  f"consider grouping related ones into an object")
+        )
     return issues
 
 
 def _is_bad_function_name(name):
     return not _SNAKE_CASE_RE.match(name) and not name.startswith("visit_") and name not in _NAMING_EXEMPT
+
+
+def _has_any_annotation(node):
+    """True if the function has at least one parameter annotation or a return annotation."""
+    if node.returns is not None:
+        return True
+    all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+    return any(
+        arg.arg not in ("self", "cls") and arg.annotation is not None
+        for arg in all_args
+    )
 
 
 def _style_doc_issues(fn, node, path, limits):
@@ -481,6 +628,13 @@ def _style_doc_issues(fn, node, path, limits):
     if _is_bad_function_name(fn.name):
         msg = f"Function '{fn.name}' should be snake_case"
         issues.append(Issue(path, fn.lineno, "style", "info", "bad-function-name", msg))
+    if (fn.is_public and not is_test_file(path)
+            and fn.length > limits.docstring_min_lines
+            and not _has_any_annotation(node)):
+        issues.append(Issue(
+            path, fn.lineno, "documentation", "info", "missing-type-annotations",
+            f"Public function '{fn.name}' has no type annotations"
+        ))
     return issues
 
 
@@ -494,7 +648,10 @@ def _process_function(node, path, limits, fm, only_lines):
     fm.issues.extend(_check_function_issues(fn, node, path, limits))
     fm.issues.extend(_find_unused_variables(node, path, only_lines))
     fm.issues.extend(assertion_free_test_issues(node, path))
+    fm.issues.extend(tautological_test_issues(node, path))
+    fm.issues.extend(mock_only_test_issues(node, path))
     fm.issues.extend(docstring_drift_issues(node, path))
+    fm.issues.extend(_too_many_returns_issues(node, path, limits))
 
 
 def _check_bare_except(node, path, only_lines):
@@ -638,18 +795,62 @@ def _walk_tree(tree, path, limits, only_lines, fm):
             _process_other_node(node, path, only_lines, fm)
 
 
-def _module_level_issues(tree, path, only_lines, check_imports):
+def _too_many_returns_issues(node, path, limits):
+    max_returns = getattr(limits, "max_return_statements", 5)
+    rc = _ReturnCounter()
+    rc.generic_visit(node)
+    if rc.count > max_returns:
+        return [Issue(
+            path, node.lineno, "structure", "info", "too-many-return-statements",
+            f"Function '{node.name}' has {rc.count} return statements (limit {max_returns}) "
+            f"-- consider extracting branches into helper functions"
+        )]
+    return []
+
+
+def _god_class_issues(tree, path, limits, only_lines):
+    max_methods = getattr(limits, "max_class_methods", 20)
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or not _in_scope(node, only_lines):
+            continue
+        methods = [n for n in node.body if isinstance(n, _FUNC_TYPES)]
+        if len(methods) > max_methods:
+            issues.append(Issue(
+                path, node.lineno, "structure", "warn", "god-class",
+                f"Class '{node.name}' has {len(methods)} methods (limit {max_methods}) "
+                f"-- consider splitting into smaller, more focused classes"
+            ))
+    return issues
+
+
+def _module_level_issues(tree, path, limits, only_lines, check_imports):
     issues = (
         _unused_import_issues(tree, path, only_lines)
         + security_issues(tree, path, only_lines)
+        + assert_validation_issues(tree, path, only_lines)
         + unreachable_code_issues(tree, path, only_lines)
         + resource_lifecycle_issues(tree, path, only_lines)
         + query_in_loop_issues(tree, path, only_lines)
         + unawaited_coroutine_issues(tree, path, only_lines)
         + _print_call_issues(tree, path, only_lines)
+        + stub_implementation_issues(tree, path, only_lines)
+        + deprecated_api_issues(tree, path, only_lines)
+        + comparison_idiom_issues(tree, path, only_lines)
+        + shadowed_builtin_issues(tree, path, only_lines)
+        + mutable_class_attribute_issues(tree, path, only_lines)
+        + f_string_no_placeholder_issues(tree, path, only_lines)
+        + redundant_else_issues(tree, path, only_lines)
+        + string_concat_in_loop_issues(tree, path, only_lines)
+        + _god_class_issues(tree, path, limits, only_lines)
+        + boolean_trap_issues(tree, path, only_lines)
+        + magic_number_issues(tree, path, only_lines)
+        + nested_comprehension_issues(tree, path, only_lines)
+        + long_lambda_issues(tree, path, only_lines)
     )
     if check_imports:
         issues += _unresolved_import_issues(tree, path, only_lines)
+        issues += stdlib_attribute_issues(tree, path, only_lines)
     return issues
 
 
@@ -682,7 +883,7 @@ def analyze(path, source, limits, only_lines=None, check_imports=False):
     )
 
     _walk_tree(tree, path, limits, only_lines, fm)
-    fm.issues.extend(_module_level_issues(tree, path, only_lines, check_imports))
+    fm.issues.extend(_module_level_issues(tree, path, limits, only_lines, check_imports))
 
     if total_lines > limits.max_file_lines and only_lines is None:
         msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"
@@ -690,5 +891,7 @@ def analyze(path, source, limits, only_lines=None, check_imports=False):
 
     line_issues, comment_lines = _line_checks(path, lines, limits.max_line_length, only_lines)
     fm.issues.extend(line_issues)
+    fm.issues.extend(placeholder_comment_issues(path, lines, only_lines))
+    fm.issues.extend(implicit_string_concat_issues(source, path, only_lines))
     fm.comment_lines = comment_lines
     return fm

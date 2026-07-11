@@ -31,6 +31,9 @@ DEFAULT_IGNORE_DIRS = {
     "target",
     ".idea",
     ".vscode",
+    # Coding-agent working state (Claude Code worktrees/settings live here);
+    # scanning it double-counts the repo's own files.
+    ".claude",
     "coverage",
     ".next",
     "egg-info",
@@ -77,8 +80,14 @@ DEFAULT_CONFIG = {
         "max_function_lines": 60,
         "max_file_lines": 600,
         "max_complexity": 10,
+        # Cognitive complexity (nesting-weighted, Sonar-style) -- see
+        # python_analyzer._CognitiveVisitor. 15 is Sonar's own default.
+        "max_cognitive": 15,
         "max_nesting": 4,
+        "max_params": 6,
         "docstring_min_lines": 8,  # don't demand docstrings on tiny helpers
+        "max_class_methods": 20,
+        "max_return_statements": 5,
     },
     "thresholds": {
         "fail_under": 60,

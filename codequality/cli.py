@@ -5,7 +5,8 @@ import sys
 
 from codequality import (
     __version__, ai_report, api_diff, arch_conformance, baseline as baseline_mod, churn, commit_lint,
-    complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, dead_code_confidence,
+    complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, conventions,
+    dead_code_confidence,
     dependency_check, dependency_risk, edit_distance, env_check, feature_flags, flakiness, hallucination_metrics,
     history_secrets, hotspots, large_files, migration_check, mutation, orphaned_config, ownership, pipeline,
     property_scaffold, todo_age,
@@ -460,6 +461,19 @@ def _add_complexity_coverage_risk_subparser(sub):
     ccr_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_conventions_subparser(sub):
+    conv_p = sub.add_parser(
+        "conventions",
+        help="Learn the repo's own dominant conventions (type hints, quotes, docstring style, string "
+             "formatting) and report files that deviate -- the repo itself is the baseline; report-only"
+    )
+    conv_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
+    conv_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    conv_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    conv_p.add_argument("--format", choices=["text", "json"], default="text")
+    conv_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def _add_env_check_subparser(sub):
     env_p = sub.add_parser(
         "env-check",
@@ -605,6 +619,7 @@ def build_parser():
     _add_arch_conformance_subparser(sub)
     _add_ai_report_subparser(sub)
     _add_dead_code_confidence_subparser(sub)
+    _add_conventions_subparser(sub)
 
     return parser
 
@@ -1090,6 +1105,19 @@ def cmd_todo_age(args):
     return 0
 
 
+def cmd_conventions(args):
+    """Handle `codequality conventions`: learn the repo's own dominant
+    conventions and report deviating files (see codequality/conventions.py).
+    Report-only -- always exits 0 on success.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+    result = conventions.compute(root, config)
+    text = conventions.render_json(result) if args.format == "json" else conventions.render_text(result)
+    _emit(text, args.output)
+    return 0
+
+
 def cmd_env_check(args):
     """Handle `codequality env-check`: env vars referenced in code vs. env
     vars documented in .env.example/README.md, flagged in either
@@ -1272,6 +1300,7 @@ _COMMANDS = {
     "arch-conformance": cmd_arch_conformance,
     "ai-report": cmd_ai_report,
     "dead-code-confidence": cmd_dead_code_confidence,
+    "conventions": cmd_conventions,
 }
 
 

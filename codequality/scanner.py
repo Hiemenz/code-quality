@@ -8,8 +8,8 @@ import os
 
 from codequality import coverage_check, generated_code, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, python_analyzer,
-    scope_check, signature_diff, treesitter_analyzer,
+    circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, internal_refs,
+    python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
 )
 from codequality.analyzers.base import FileMetrics
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
@@ -134,6 +134,42 @@ def _apply_dead_code(root, metrics_by_path):
         fm = metrics_by_path.get(rel_path)
         if fm is not None:
             fm.issues.extend(issues)
+
+
+def _apply_internal_refs(root, metrics_by_path):
+    """Cross-file unresolved-internal-reference detection: `from utils
+    import frobnicate` where repo-local `utils` defines no `frobnicate` --
+    see analyzers/internal_refs.py. Needs every Python file's source at
+    once to build the module map, so like dead code it's full-scan only.
+    """
+    file_sources = _python_file_sources(root, metrics_by_path)
+    for rel_path, issues in internal_refs.internal_reference_issues(file_sources).items():
+        fm = metrics_by_path.get(rel_path)
+        if fm is not None:
+            fm.issues.extend(issues)
+
+
+def _apply_unused_deps(root, metrics, metrics_by_path):
+    """Cross-file unused-dependency detection: packages listed in
+    requirements files that are never imported in any Python source file.
+    Full-scan-only, like dead-code: a diff has no view of all other imports.
+    Issues are attached to the requirements/pyproject file; a new FileMetrics
+    entry is created for it if it isn't already in metrics_by_path (the same
+    approach as _apply_doc_examples for Markdown files).
+    """
+    file_sources = _python_file_sources(root, metrics_by_path)
+    for rel_path, issues in unused_deps.unused_dependency_issues(root, file_sources).items():
+        fm = metrics_by_path.get(rel_path)
+        if fm is None:
+            try:
+                with open(os.path.join(root, rel_path), "r", encoding="utf-8") as f:
+                    line_count = sum(1 for _ in f)
+            except OSError:
+                line_count = 1
+            fm = FileMetrics(path=rel_path, language="requirements", total_lines=line_count, loc=line_count)
+            metrics.append(fm)
+            metrics_by_path[rel_path] = fm
+        fm.issues.extend(issues)
 
 
 def _discover_markdown_files(root, exclude_patterns):
@@ -289,6 +325,8 @@ def scan_repo(root, config):
     _apply_duplication(root, metrics_by_path)
     _apply_circular_imports(root, metrics_by_path)
     _apply_dead_code(root, metrics_by_path)
+    _apply_internal_refs(root, metrics_by_path)
+    _apply_unused_deps(root, metrics, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path)
     _apply_coverage(root, config, metrics_by_path)
     _apply_doc_examples(root, config, metrics, metrics_by_path)

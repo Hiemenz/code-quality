@@ -49,6 +49,33 @@ class TestCliIntegration(unittest.TestCase):
         self.assertTrue(data["threshold"]["passed"])
         self.assertEqual(data["summary"]["files_analyzed"], 1)
 
+    def test_scan_json_includes_complex_functions_table(self):
+        nested = "def hairy(x):\n"
+        for i in range(6):
+            nested += "    " * (i + 1) + f"if x > {i}:\n"
+        nested += "    " * 7 + "return x\n"
+        with open(os.path.join(self.repo, "hairy.py"), "w") as f:
+            f.write(nested)
+        code, out = self._run(["scan", self.repo, "--format", "json"])
+        data = json.loads(out)
+        self.assertEqual(code, 0)
+        rows = data["complex_functions"]
+        self.assertEqual(rows[0]["name"], "hairy")
+        self.assertGreater(rows[0]["cognitive"], 15)
+        # the trivial `add` in clean.py is below the table's floor
+        self.assertNotIn("add", [r["name"] for r in rows])
+
+    def test_conventions_subcommand_runs_end_to_end(self):
+        with open(os.path.join(self.repo, "strings.py"), "w") as f:
+            f.write("".join(f'X{i} = "v{i}"\n' for i in range(30)))
+        code, out = self._run(["conventions", self.repo, "--format", "json"])
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual(data["conventions"]["quote_style"]["dominant"], '"')
+        code, out = self._run(["conventions", self.repo])
+        self.assertEqual(code, 0)
+        self.assertIn("Learned conventions", out)
+
     def test_scan_fails_under_strict_threshold(self):
         code, _ = self._run(["scan", self.repo, "--format", "json", "--fail-under", "101"])
         self.assertEqual(code, 1)

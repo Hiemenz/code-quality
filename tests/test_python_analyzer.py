@@ -222,6 +222,161 @@ class TestPythonAnalyzer(unittest.TestCase):
         fm = python_analyzer.analyze("f.py", source, _limits())
         self.assertNotIn("assertion-free-test", {i.symbol for i in fm.issues})
 
+    def test_cognitive_complexity_weights_nesting_over_flat_branches(self):
+        flat = "def f(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(4))
+        nested = "def f(x):\n"
+        for i in range(4):
+            nested += "    " * (i + 1) + f"if x > {i}:\n"
+        nested += "    " * 5 + "return x\n"
+        fm_flat = python_analyzer.analyze("f.py", flat, _limits())
+        fm_nested = python_analyzer.analyze("f.py", nested, _limits())
+        self.assertGreater(fm_nested.functions[0].cognitive, fm_flat.functions[0].cognitive)
+
+    def test_high_cognitive_complexity_is_flagged(self):
+        source = "def f(x):\n"
+        for i in range(6):
+            source += "    " * (i + 1) + f"if x > {i}:\n"
+        source += "    " * 7 + "return x\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertGreater(fm.functions[0].cognitive, 15)
+        issues = [i for i in fm.issues if i.symbol == "high-cognitive-complexity"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].category, "complexity")
+
+    def test_elif_chain_costs_linear_not_quadratic(self):
+        source = (
+            "def f(x):\n"
+            "    if x == 1:\n        return 1\n"
+            "    elif x == 2:\n        return 2\n"
+            "    elif x == 3:\n        return 3\n"
+            "    else:\n        return 0\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        # if (+1) + two elifs (+1 each, flat) + else (+1) = 4
+        self.assertEqual(fm.functions[0].cognitive, 4)
+
+    def test_boolop_inside_elif_condition_still_counts(self):
+        source = (
+            "def f(x, y):\n"
+            "    if x:\n        return 1\n"
+            "    elif x and y:\n        return 2\n"
+            "    return 0\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        # if (+1) + elif (+1) + `and` (+1) = 3
+        self.assertEqual(fm.functions[0].cognitive, 3)
+
+    def test_cognitive_complexity_counts_ternary_and_except(self):
+        source = (
+            "def f(x):\n"
+            "    y = 1 if x else 2\n"
+            "    try:\n"
+            "        return y\n"
+            "    except ValueError:\n"
+            "        return 0\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        # IfExp (+1) and one except handler (+1); try itself is free.
+        self.assertEqual(fm.functions[0].cognitive, 2)
+
+    def test_cognitive_complexity_of_flat_function_is_zero(self):
+        fm = python_analyzer.analyze("f.py", "def f(a, b):\n    return a + b\n", _limits())
+        self.assertEqual(fm.functions[0].cognitive, 0)
+
+    def test_nested_function_does_not_inflate_parent_cognitive(self):
+        source = (
+            "def outer(x):\n"
+            "    def inner(y):\n"
+            "        if y:\n"
+            "            if y > 1:\n"
+            "                return 2\n"
+            "        return 1\n"
+            "    return inner(x)\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        by_name = {fn.name: fn.cognitive for fn in fm.functions}
+        self.assertEqual(by_name["outer"], 0)
+        self.assertEqual(by_name["inner"], 3)  # if (+1) + nested if (+2)
+
+    def test_too_many_params_is_flagged_info(self):
+        source = "def f(a, b, c, d, e, f2, g):\n    return a\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "too-many-params"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].severity, "info")
+
+    def test_six_params_is_within_limit(self):
+        source = "def f(a, b, c, d, e, f2):\n    return a\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("too-many-params", {i.symbol for i in fm.issues})
+
+    def test_assert_true_only_test_is_tautological(self):
+        source = "def test_it():\n    run()\n    assert True\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "tautological-test"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].category, "correctness")
+        self.assertNotIn("assertion-free-test", {i.symbol for i in fm.issues})
+
+    def test_self_comparison_assert_is_tautological(self):
+        source = "def test_it():\n    assert value(1) == value(1)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("tautological-test", {i.symbol for i in fm.issues})
+
+    def test_assert_equal_same_args_is_tautological(self):
+        source = "def test_it(self):\n    self.assertEqual(result, result)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("tautological-test", {i.symbol for i in fm.issues})
+
+    def test_real_assertion_alongside_assert_true_is_not_flagged(self):
+        source = "def test_it():\n    assert True\n    assert add(1, 2) == 3\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("tautological-test", {i.symbol for i in fm.issues})
+
+    def test_assert_false_is_not_tautological(self):
+        source = "def test_it():\n    assert False\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("tautological-test", {i.symbol for i in fm.issues})
+
+    def test_assertion_free_test_is_not_double_flagged_as_tautological(self):
+        source = "def test_no_assert():\n    add(1, 2)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("tautological-test", {i.symbol for i in fm.issues})
+
+    def test_mock_only_test_is_flagged_info(self):
+        source = "def test_it(self):\n    do_thing(self.svc)\n    self.svc.notify.assert_called_once_with('x')\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        issues = [i for i in fm.issues if i.symbol == "mock-only-test"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].severity, "info")
+
+    def test_mock_assertion_plus_real_assertion_is_not_mock_only(self):
+        source = (
+            "def test_it(self):\n"
+            "    result = do_thing(self.svc)\n"
+            "    self.svc.notify.assert_called_once_with('x')\n"
+            "    assert result == 3\n"
+        )
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("mock-only-test", {i.symbol for i in fm.issues})
+
+    def test_assertion_free_test_is_not_mock_only(self):
+        source = "def test_no_assert():\n    add(1, 2)\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertNotIn("mock-only-test", {i.symbol for i in fm.issues})
+
+    def test_stub_and_placeholder_checks_are_wired_into_analyze(self):
+        source = "def convert(x):\n    raise NotImplementedError\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("stub-implementation", {i.symbol for i in fm.issues})
+        source = "def f():\n    # your logic here" + "\n    pass\n"
+        fm = python_analyzer.analyze("f.py", source, _limits())
+        self.assertIn("placeholder-comment", {i.symbol for i in fm.issues})
+
+    def test_deprecated_api_check_is_wired_into_analyze(self):
+        fm = python_analyzer.analyze("f.py", "import imp\n", _limits())
+        self.assertIn("deprecated-api", {i.symbol for i in fm.issues})
+
     def test_broad_except_swallow_is_flagged(self):
         source = "def f():\n    try:\n        risky()\n    except Exception:\n        pass\n"
         fm = python_analyzer.analyze("f.py", source, _limits())

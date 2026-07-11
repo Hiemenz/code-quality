@@ -226,6 +226,11 @@ codequality pipeline .
 # One dashboard: churn + edit-distance + commit-lint + hallucination-rate,
 # AI-assisted vs. human, side by side (see "AI code quality report" below)
 codequality ai-report . --check-imports --check-types
+
+# Learn the repo's own dominant conventions (type hints, quotes, docstring
+# style, string formatting) and list files that deviate -- the repo itself
+# is the baseline, report-only (see "Repo conventions" below)
+codequality conventions .
 ```
 
 `scan` and `diff` share the same flags:
@@ -241,7 +246,7 @@ codequality ai-report . --check-imports --check-types
 | `--no-generic` | Only analyze Python; skip the analyzer for other languages |
 | `--include-generated` | Score auto-detected generated files too (excluded by default — see [Generated files are excluded from scoring](#generated-files-are-excluded-from-scoring)) |
 | `--baseline FILE` | Forgive issues already recorded in this baseline file — see below |
-| `--check-imports` | Flag Python imports that don't resolve in this environment (opt-in) |
+| `--check-imports` | Flag Python imports that don't resolve in this environment, and hallucinated stdlib attributes like `os.path.exists_dir()` (opt-in) |
 | `--check-types` | Run mypy and fold its findings into the correctness category (opt-in) |
 | `--check-coverage` | Run the repo's own test suite under coverage.py (opt-in; executes your code) |
 | `--test-command "..."` | Command to run under `--check-coverage`, as args after `python -m` |
@@ -253,7 +258,9 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Twenty-three more subcommands, each documented in its own section below:
+Twenty-four more subcommands, each documented in its own section below:
+`codequality conventions` (the repo's own conventions as the baseline —
+see [Repo conventions](#repo-conventions-the-scanned-repo-is-the-baseline)),
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
 `codequality edit-distance`, `codequality commit-lint`,
 `codequality hallucination-rate`, `codequality ai-report`,
@@ -295,13 +302,13 @@ Eight categories, each 0-100, combined by weight into the overall score:
 
 | Category | Default weight | What it measures |
 |---|---|---|
-| Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses) |
+| Complexity | 15 | Cyclomatic complexity per function (McCabe-style: branches, loops, boolean operators, comprehensions, `except` clauses), plus *cognitive* complexity (Sonar-style, nesting-weighted: a branch buried four levels deep costs more than the same branch laid flat — the better proxy for "how hard is this to read"). Every scan also prints a repo-wide "Most complex functions" table (see below) so the hardest functions stay visible even when nothing crosses a limit |
 | Structure | 10 | Function length, nesting depth, file length, circular imports (cross-file). Also reports (but doesn't score, see below) cross-file dead code: public top-level functions/classes never referenced anywhere else in the repo |
 | Duplication | 10 | Copy-pasted blocks (6+ line sliding-window hash, cross-file) |
 | Documentation | 8 | Docstring coverage on public functions and modules, stale docstrings that document a removed parameter, and Markdown code examples that no longer parse (reported, doesn't affect this category's score -- see below) |
 | Style | 12 | Long lines, trailing whitespace, TODO markers, bare `except:`, `except Exception: pass`-style silent swallowing, raising a new exception without chaining from the original, wildcard imports, mutable default arguments, unused imports/variables, non-conventional naming, `print()` calls left in library code |
 | Security | 15 | `eval`/`exec`, `shell=True`, unsafe deserialization (`pickle`, `yaml.load`), hardcoded-looking secrets, SQL built via string interpolation instead of parameters, logging a secret-looking variable |
-| Correctness | 15 | Always-on: assertion-free tests, unreachable code, unclosed resources (`open()`/`socket.socket()`/`urlopen()` never used as a context manager or explicitly closed), a query-shaped call inside a loop (N+1 pattern), a local async function called without awaiting/scheduling it. Opt-in: unresolved imports (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
+| Correctness | 15 | Always-on: assertion-free tests, tautological tests (every assertion trivially true), mock-only tests, unreachable code, unclosed resources (`open()`/`socket.socket()`/`urlopen()` never used as a context manager or explicitly closed), a query-shaped call inside a loop (N+1 pattern), a local async function called without awaiting/scheduling it, stub function bodies (`pass`/`...`/`raise NotImplementedError` only), placeholder comments (`# ... rest of the code ...`), deprecated/removed stdlib APIs (`imp`, `distutils`, `datetime.utcnow()`, ...), and — full scan only, cross-file — references to repo-internal names that don't exist (`from utils import frobnicate` where `utils.py` has no `frobnicate`). Opt-in: unresolved imports *and* hallucinated stdlib attributes like `os.path.exists_dir()` (`--check-imports`), real type errors (`--check-types`) — see [Correctness checks](#correctness-checks-opt-in) |
 | Coverage | 15 | Opt-in: line coverage from your own test suite (`--check-coverage`). 100 until you opt in — see [Test coverage](#test-coverage-opt-in-executes-your-code) |
 
 The first six categories are pure static analysis — the same "is this code
@@ -319,10 +326,13 @@ simple arithmetic on purpose, not a black box.
 
 Python-only checks (no equivalent yet for other languages): unused
 imports/variables, cross-file dead-code detection, `pickle`/`yaml.load`
-deserialization checks, assertion-free tests, broad exception-swallowing,
+deserialization checks, assertion-free tests, tautological tests,
+mock-only tests, broad exception-swallowing,
 lost exception chaining, stale-docstring parameters, unreachable code,
 unclosed resources, query-in-loop, unawaited coroutines, SQL-injection-
-shaped queries, sensitive-data logging, circular imports, and
+shaped queries, sensitive-data logging, circular imports,
+unresolved internal references, deprecated stdlib APIs, cognitive
+complexity, and
 **`print-in-library-code`** — a `print(...)` call found anywhere in a
 Python file, `info` severity, since it's a heuristic. A common smell,
 especially in LLM-generated code that defaults to `print()` for
@@ -360,6 +370,24 @@ looking tidy:
   "test theater" and is distinct from coverage (which only asks "did
   anything call this") — it's a static, instant check for tests that
   can't fail even in principle.
+- **`tautological-test`** — the sneakier sibling of the above: the test
+  *has* assertions, but every single one is trivially true (`assert True`,
+  `assertEqual(x, x)`, `assert f(1) == f(1)` comparing an expression to
+  itself), so it still can't fail no matter what the code under test does.
+  Common in LLM-written tests generated to satisfy a "write tests"
+  instruction rather than to verify behavior. Only fires when *all* of a
+  test's assertions are tautological — one `assert True` next to a real
+  assertion is odd but harmless, and flagging it would be noise.
+- **`mock-only-test`** — the test's every assertion is a mock-interaction
+  assertion (`assert_called_once_with`, `assert_awaited`,
+  `assert_has_calls`, ...): it verifies mocks were poked, never a real
+  output or state change. Interaction-testing is a legitimate style when
+  the interaction *is* the contract, so this is `info` — a
+  distribution-level signal (a suite where most tests assert only on
+  mocks is classic "mock everything, then assert the mocks are mocks"
+  LLM output), not a per-test verdict. A single real assertion clears
+  the test, and a test with no assertions at all is
+  `assertion-free-test`'s finding instead.
 - **`broad-except-swallow`** — `except Exception:` (or `BaseException`)
   whose body is just `pass` (optionally with a leading string "comment")
   and nothing else: no re-raise, no logging, no returned error signal.
@@ -413,6 +441,62 @@ looking tidy:
   `SECRET_NAME_RE` used for `hardcoded-secret`). Logging a credential is a
   common way secrets leak into log aggregators/terminals even when the
   value itself is never hardcoded anywhere.
+- **`stub-implementation`** — a function whose body (after its docstring)
+  is nothing but `pass`, `...`, or a single `raise NotImplementedError`:
+  code that *looks* finished but was never written, an LLM failure mode
+  far more common than in hand-written code. The `raise
+  NotImplementedError` form is `warn` (calling it crashes; outside an
+  abstract base that's almost never intentional); the `pass`/`...`/
+  docstring-only forms are `info`, since an intentional no-op hook is a
+  legitimate pattern this check can't distinguish from an unfinished one.
+  Exempt, all in the fewer-false-positives direction (see
+  `codequality/analyzers/placeholder_code.py`'s module docstring): any
+  decorated function (`@abstractmethod`/`@overload`/framework hooks),
+  every method of an abstract-looking class (a `Protocol`/`ABC` base,
+  `metaclass=ABCMeta`, or any sibling `@abstractmethod`), and `test_*`
+  functions (`assertion-free-test` already covers those). Other
+  languages get a line-level version via the generic analyzer: `throw
+  new NotImplementedException`, `throw new Error('not implemented')`,
+  Go's `panic("not implemented")`, Rust's `todo!()`/`unimplemented!()`,
+  Kotlin's `TODO()`, always `info` there since without a parser an
+  intentionally-abstract member can't be told apart.
+- **`placeholder-comment`** — a standalone comment line matching a fixed
+  set of "the model elided the code here" phrases: `# ... rest of the
+  code ...`, `# your logic here`, `# implementation omitted`, `# ...
+  existing code ...`, and so on. Near-unambiguous: a human rarely writes
+  these, an LLM asked to edit a file writes them constantly — and the
+  code that was supposed to be there is simply missing. Only lines that
+  *start* with a comment marker are scanned, so a `#` inside a string
+  (a URL fragment, say) can't false-positive. Runs for every supported
+  language (`//`, `#`, `/*`, `--` comments alike), same shared phrase
+  list.
+- **`unresolved-internal-import`** / **`unresolved-internal-attribute`** —
+  the repo-internal sibling of `--check-imports`' package hallucination:
+  `from utils import frobnicate` (`warn` — a guaranteed ImportError), or
+  `utils.frobnicate(...)` (`info` — module attributes can be attached at
+  runtime), where repo-local `utils` defines no top-level `frobnicate`.
+  An LLM does this far more often than a human typo: it "remembers" a
+  helper that a similar codebase had. Pure AST over the same cross-file
+  source map dead-code uses — no imports executed, always-on in full
+  `scan`, absent from `diff` (no view of the rest of the repo there).
+  Conservative skips (star-importing modules, PEP 562 module
+  `__getattr__`, shadowed/reassigned names, locally-attached attributes)
+  are documented in `codequality/analyzers/internal_refs.py`.
+- **`deprecated-api`** — imports and calls matched against a fixed table
+  of stdlib APIs that are deprecated or physically removed in current
+  CPython: the PEP 594 "dead batteries" (`cgi`, `telnetlib`, `pipes`,
+  ...), `imp`/`distutils` (removed 3.12), `ssl.wrap_socket` (removed
+  3.12), unittest's removed `assertEquals`-style aliases,
+  `datetime.utcnow()`/`utcfromtimestamp()` (deprecated 3.12, and a naive-
+  datetime bug factory), `asyncio.get_event_loop()` outside a running
+  loop, `pkg_resources`, `locale.getdefaultlocale()`. Removed APIs are
+  `warn` (the code crashes on a modern interpreter); deprecated-but-
+  working ones are `info`. This one is aimed squarely at the "model
+  trained on an old corpus" signature: a *fresh* file using `imp` or
+  `utcnow()` is strong evidence the code was generated from stale
+  training data and never run against a current runtime. No version
+  sniffing, no network — just a name table
+  (`codequality/analyzers/deprecated_api.py`).
 
 ### Generated files are excluded from scoring
 
@@ -787,10 +871,52 @@ improves. Mechanically it's just a bulk, auto-generated version of the
 inline suppression comments above — same underlying mechanism, generated
 from a snapshot instead of written by hand.
 
+## Repo conventions: the scanned repo is the baseline
+
+```bash
+codequality conventions .
+codequality conventions . --format json
+```
+
+Every other check scores code against *universal* rules. This subcommand
+answers the question that matters most when judging LLM-written additions
+to an existing codebase: **does the new code look like it belongs to this
+repo?** It learns the repo's own dominant conventions — deterministically,
+from the code being scanned, with no configuration of what the conventions
+"should" be — then lists the files written against that grain:
+
+- **type hints** — share of annotatable slots (params minus `self`/`cls`,
+  plus returns) annotated. Flagged one-way only: a mostly-untyped file in
+  a repo that has clearly committed to typing (≥70% typed overall). A
+  typed file in an untyped repo is an improvement, not a deviation.
+- **quote style** — single vs. double, from real tokenization; docstrings
+  and triple-quoted strings excluded.
+- **docstring style** — Sphinx (`:param x:`) vs. Google (`Args:`) vs.
+  NumPy (`Parameters` + underline).
+- **string formatting** — f-strings vs. `.format(...)`. `%`-formatting is
+  deliberately ignored: `logger.info("%s", x)` is the *correct* logging
+  idiom, not legacy interpolation.
+
+A convention only becomes a baseline once the repo has committed to it
+(enough samples, ≥75% agreement), and a file only deviates when it has
+enough samples of its own *and* its majority points the other way — one
+odd string literal is noise; a whole file against the repo's grain is
+signal. Python-only in this first version (what counts as a convention is
+language-specific). **Report-only**: no score, no gate, exit 0 — these go
+on the review table, they don't break builds.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo/directory root to analyze (default `.`) |
+| `--config PATH` / `--exclude` | Same conventions as `scan` |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
 ## Correctness checks (opt-in)
 
-Everything above this section other than `assertion-free-test` and
-`unreachable-code` is static analysis: it can tell you code is tidy,
+Everything above this section other than the always-on correctness checks
+(assertion-free/tautological/mock-only tests, unreachable code, stubs,
+unresolved internal references, ...) is static analysis: it can tell you code is tidy,
 documented, and free of obvious security footguns, but none of it can
 tell you the code actually *does what it's supposed to do*. An LLM can
 write low-complexity, well-documented, secure-looking code that's still
@@ -810,6 +936,20 @@ installed in the environment you run `codequality` in — which means it's
 only meaningful if that environment has the target repo's real
 dependencies installed (run it in CI after your normal install step, not
 in a bare virtualenv).
+
+The same flag also verifies *stdlib attribute* access
+(**`unresolved-attribute`**): `os.path.exists_dir(...)`, `from json
+import dumpss` — a module that exists whose member doesn't. Only modules
+in `sys.stdlib_module_names` are ever imported for inspection (so the
+"never execute code from the scanned repo" rule holds; third-party
+packages are never touched), a tiny denylist skips the stdlib's
+side-effect modules (`antigravity`, `this`), and attribute chains are
+verified only while the object in hand is a module or a class —
+`datetime.datetime.utcnowww` is caught, `sys.stdout.write` stops at the
+instance. Names the file re-binds or monkeypatches are skipped — see
+`codequality/analyzers/stdlib_attrs.py` for every conservatism. Like the
+import check, results depend on the running interpreter's version — the
+message says which Python it checked against.
 
 `--check-types` runs `mypy` (`pip install codequality[types]`) over the
 whole repo and folds its errors into the correctness category. Like

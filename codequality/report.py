@@ -37,6 +37,43 @@ def _worst_files(file_metrics_list, limit=10):
     return scored[:limit]
 
 
+# Functions below both floors are never worth listing in the complexity
+# table, no matter how clean the rest of the repo is -- without a floor,
+# a tidy repo's report would "top out" with complexity-3 functions and
+# imply they're a problem. Fixed values rather than config limits on
+# purpose: the table is a repo-wide "these are your hardest functions"
+# ranking meant to stay visible even when everything passes the
+# per-function limits, not another pass/fail gate.
+_COMPLEXITY_TABLE_FLOOR_COGNITIVE = 8
+_COMPLEXITY_TABLE_FLOOR_MCCABE = 8
+
+
+def _complex_functions(file_metrics_list, limit=10):
+    """Top `limit` functions repo-wide by cognitive complexity (McCabe as
+    tie-break) -- the always-visible "known complexity debt" ranking; see
+    the floor comment above.
+    """
+    ranked = [
+        fn
+        for fm in file_metrics_list
+        for fn in fm.functions
+        if fn.cognitive >= _COMPLEXITY_TABLE_FLOOR_COGNITIVE or fn.complexity >= _COMPLEXITY_TABLE_FLOOR_MCCABE
+    ]
+    ranked.sort(key=lambda fn: (fn.cognitive, fn.complexity), reverse=True)
+    return [
+        {
+            "file": fn.file,
+            "line": fn.lineno,
+            "name": fn.name,
+            "cognitive": fn.cognitive,
+            "complexity": fn.complexity,
+            "length": fn.length,
+            "nesting": fn.nesting,
+        }
+        for fn in ranked[:limit]
+    ]
+
+
 def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, fail_under=None, use_color=True):
     """Assemble the format-agnostic report dict consumed by render_json/text/markdown."""
     issues = _all_issues(file_metrics_list)
@@ -69,6 +106,7 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
             "test_ratio": test_ratio,
         },
         "worst_files": [{"path": p, "score": s, "lines": n} for p, s, n in _worst_files(file_metrics_list)],
+        "complex_functions": _complex_functions(file_metrics_list),
         "issues": [i.to_dict() for i in issues],
         "diff": diff_info,
         "threshold": {"fail_under": fail_under, "passed": passed},
@@ -122,6 +160,15 @@ def render_text(summary, use_color=True, max_issues=25):
         lines.append(f"{c('bold')}Lowest-scoring files{c('reset')}")
         for wf in summary["worst_files"]:
             lines.append(f"  {wf['score']:>5.1f}  {wf['path']} ({wf['lines']} lines)")
+
+    if summary.get("complex_functions"):
+        lines.append("")
+        lines.append(f"{c('bold')}Most complex functions{c('reset')} (cognitive/McCabe -- known debt, not a gate)")
+        for cf in summary["complex_functions"]:
+            lines.append(
+                f"  cog {cf['cognitive']:>3}  mccabe {cf['complexity']:>3}  "
+                f"{cf['file']}:{cf['line']}  {cf['name']} ({cf['length']} lines)"
+            )
 
     if summary["issues"]:
         lines.append("")
@@ -226,6 +273,17 @@ def render_markdown(summary):
         lines.append("|---|---|---|")
         for wf in summary["worst_files"]:
             lines.append(f"| {wf['score']:.1f} | `{wf['path']}` | {wf['lines']} |")
+
+    if summary.get("complex_functions"):
+        lines.append("")
+        lines.append("### Most complex functions (known debt, not a gate)")
+        lines.append("| Cognitive | McCabe | Function | Lines |")
+        lines.append("|---|---|---|---|")
+        for cf in summary["complex_functions"]:
+            lines.append(
+                f"| {cf['cognitive']} | {cf['complexity']} | `{cf['file']}:{cf['line']}` {cf['name']} "
+                f"| {cf['length']} |"
+            )
 
     if summary["issues"]:
         lines.append("")

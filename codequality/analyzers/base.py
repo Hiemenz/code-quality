@@ -36,6 +36,9 @@ class FunctionMetrics:
     params: int
     has_docstring: bool
     is_public: bool = True
+    # Sonar-style cognitive complexity (nesting-weighted); 0 for analyzers
+    # that don't compute it (generic/tree-sitter paths).
+    cognitive: int = 0
     suppressed: frozenset = field(default_factory=frozenset)  # symbols suppressed at this function's line
 
     @property

@@ -11,8 +11,9 @@ from codequality.analyzers import (
     circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, internal_refs,
     python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
 )
-from codequality.analyzers.base import FileMetrics
+from codequality.analyzers.base import FileMetrics, Issue
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
+from codequality.property_scaffold import is_test_file
 
 
 def _is_excluded(rel_path, patterns):
@@ -311,6 +312,51 @@ def _apply_scope_check(metrics_by_path, task_description):
         metrics_by_path[rel_path].issues.extend(issues)
 
 
+_MISSING_TEST_MIN_COMPLEXITY = 3
+
+
+def _apply_missing_tests(metrics_by_path):
+    """Flag non-test Python source files that have meaningful complexity but no
+    corresponding test file anywhere in the scanned set. Only runs on full
+    scans (not diff) because a diff has no view of the rest of the repo's test
+    files.
+
+    A file is considered tested if a path matching ``test_<stem>.py``,
+    ``<stem>_test.py``, or ``tests/<stem>.py`` (case-insensitive) appears
+    anywhere in `metrics_by_path`.  Files with max cyclomatic complexity below
+    `_MISSING_TEST_MIN_COMPLEXITY` are skipped -- tiny helpers rarely warrant
+    their own test file.
+    """
+    tested_stems = set()
+    for rel_path in metrics_by_path:
+        base = os.path.basename(rel_path)
+        name, _ = os.path.splitext(base)
+        nl = name.lower()
+        if nl.startswith("test_"):
+            tested_stems.add(nl[5:])
+        elif nl.endswith("_test"):
+            tested_stems.add(nl[:-5])
+
+    for rel_path, fm in metrics_by_path.items():
+        if fm.language != "python":
+            continue
+        if is_test_file(rel_path):
+            continue
+        if not fm.functions:
+            continue
+        max_cc = max(fn.complexity for fn in fm.functions)
+        if max_cc < _MISSING_TEST_MIN_COMPLEXITY:
+            continue
+        stem, _ = os.path.splitext(os.path.basename(rel_path).lower())
+        if stem in tested_stems:
+            continue
+        fm.issues.append(Issue(
+            rel_path, 1, "correctness", "info", "missing-test-file",
+            f"No test file found for '{os.path.basename(rel_path)}' "
+            f"(max complexity {max_cc}) -- consider adding tests"
+        ))
+
+
 def scan_repo(root, config):
     """Full-repo scan: every supported file, in full."""
     files = discover_files(root, config.exclude, config.include_generic_languages)
@@ -330,6 +376,7 @@ def scan_repo(root, config):
     _apply_type_checking(root, config, metrics_by_path)
     _apply_coverage(root, config, metrics_by_path)
     _apply_doc_examples(root, config, metrics, metrics_by_path)
+    _apply_missing_tests(metrics_by_path)
     return metrics
 
 

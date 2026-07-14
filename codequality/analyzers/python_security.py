@@ -191,7 +191,28 @@ def _hardcoded_secret_issue(node, path):
                  f"'{name}' looks like a hardcoded secret")
 
 
-_CALL_CHECKS = (_security_call_issue, _sql_injection_issue, _sensitive_logging_issue)
+def _fstring_log_issue(node, path):
+    """Flags logger.<level>(f"...") calls where the f-string has actual
+    interpolations.  Passing an already-formatted string to the logger
+    defeats lazy evaluation: the string is always built even when the log
+    level is disabled, and the structured-logging %-style API is bypassed.
+    The fix is ``logger.debug("...", value)`` instead of
+    ``logger.debug(f"... {value}")``.
+    Skips print() -- only structured logging loggers benefit from lazy eval.
+    """
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr in _LOG_METHOD_NAMES):
+        return None
+    for arg in node.args:
+        if isinstance(arg, ast.JoinedStr) and any(isinstance(v, ast.FormattedValue) for v in arg.values):
+            return Issue(
+                path, node.lineno, "style", "warn", "fstring-log-arg",
+                "f-string passed directly to logger defeats lazy evaluation -- "
+                "use logger.method('...%s', value) instead"
+            )
+    return None
+
+
+_CALL_CHECKS = (_security_call_issue, _sql_injection_issue, _sensitive_logging_issue, _fstring_log_issue)
 
 
 def assert_validation_issues(tree, path, only_lines):

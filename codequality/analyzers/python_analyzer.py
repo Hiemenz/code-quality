@@ -30,6 +30,7 @@ from codequality.analyzers.python_idioms import (
     shadowed_builtin_issues,
 )
 from codequality.analyzers.python_loop_perf import string_concat_in_loop_issues
+from codequality.analyzers.python_import_order import import_order_issues
 from codequality.analyzers.python_token_checks import implicit_string_concat_issues
 from codequality.analyzers.python_security import assert_validation_issues, security_issues
 from codequality.analyzers.python_test_quality import (
@@ -847,6 +848,7 @@ def _module_level_issues(tree, path, limits, only_lines, check_imports):
         + magic_number_issues(tree, path, only_lines)
         + nested_comprehension_issues(tree, path, only_lines)
         + long_lambda_issues(tree, path, only_lines)
+        + import_order_issues(tree, path, only_lines)
     )
     if check_imports:
         issues += _unresolved_import_issues(tree, path, only_lines)

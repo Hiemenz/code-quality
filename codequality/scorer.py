@@ -120,6 +120,9 @@ def score_style(file_metrics_list):
         "unused-variable": 2,
         "bad-function-name": 1,
         "bad-class-name": 1,
+        "future-import-order": 2,
+        "relative-before-absolute": 1,
+        "fstring-log-arg": 1,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:
@@ -180,6 +183,7 @@ def score_correctness(file_metrics_list):
         "stub-implementation": 5,
         "placeholder-comment": 8,
         "deprecated-api": 4,
+        "missing-test-file": 3,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:

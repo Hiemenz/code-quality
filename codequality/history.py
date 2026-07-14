@@ -88,14 +88,41 @@ def _render_test_ratio_section(entries):
     return lines
 
 
+def _render_category_section(entries):
+    """Sparkline + delta table per category, for entries that carry category data."""
+    all_categories = []
+    for e in entries:
+        for cat in e.get("categories", {}):
+            if cat not in all_categories:
+                all_categories.append(cat)
+    if not all_categories:
+        return []
+
+    lines = ["Category Score History", ""]
+    for cat in all_categories:
+        values = [e["categories"].get(cat) for e in entries if "categories" in e]
+        numeric = [v for v in values if v is not None]
+        if not numeric:
+            continue
+        spark = _sparkline(numeric)
+        latest = numeric[-1]
+        delta = f"{numeric[-1] - numeric[-2]:+.1f}" if len(numeric) >= 2 else ""
+        lines.append(f"  {cat:<14} {spark}  latest {latest:>5.1f}  {delta}")
+    return lines
+
+
 def render_trend_text(entries):
     """Render `entries` (as returned by `read_entries`) as a sparkline + score table,
-    followed by the same for the test-to-source LOC ratio.
+    followed by per-category sparklines and the test-to-source LOC ratio.
     """
     if not entries:
         return "No history entries found."
 
     lines = _render_score_section(entries)
     lines.append("")
+    category_lines = _render_category_section(entries)
+    if category_lines:
+        lines.extend(category_lines)
+        lines.append("")
     lines.extend(_render_test_ratio_section(entries))
     return "\n".join(lines)

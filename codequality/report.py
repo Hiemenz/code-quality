@@ -74,7 +74,7 @@ def _complex_functions(file_metrics_list, limit=10):
     ]
 
 
-def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, fail_under=None, use_color=True):
+def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, fail_under=None, fail_on=None, use_color=True):
     """Assemble the format-agnostic report dict consumed by render_json/text/markdown."""
     issues = _all_issues(file_metrics_list)
     total_functions = sum(len(fm.functions) for fm in file_metrics_list)
@@ -83,7 +83,14 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
     test_loc = sum(fm.loc for fm in file_metrics_list if is_test_file(fm.path))
     source_loc = total_loc - test_loc
     test_ratio = (test_loc / source_loc) if source_loc else None
-    passed = score_result.overall >= fail_under if fail_under is not None else True
+    score_passed = score_result.overall >= fail_under if fail_under is not None else True
+    fail_on_categories = [c.strip() for cs in (fail_on or []) for c in cs.split(",") if c.strip()]
+    category_issues = {cat: [] for cat in fail_on_categories}
+    for issue in issues:
+        if issue.category in category_issues:
+            category_issues[issue.category].append(issue.to_dict())
+    fail_on_triggered = [cat for cat in fail_on_categories if category_issues.get(cat)]
+    passed = score_passed and not fail_on_triggered
 
     return {
         "tool": "codequality",
@@ -109,7 +116,12 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
         "complex_functions": _complex_functions(file_metrics_list),
         "issues": [i.to_dict() for i in issues],
         "diff": diff_info,
-        "threshold": {"fail_under": fail_under, "passed": passed},
+        "threshold": {
+            "fail_under": fail_under,
+            "fail_on": fail_on_categories or None,
+            "fail_on_triggered": fail_on_triggered or None,
+            "passed": passed,
+        },
     }
 
 
@@ -182,13 +194,19 @@ def render_text(summary, use_color=True, max_issues=25):
 
     threshold = summary["threshold"]
     lines.append("")
-    if threshold["fail_under"] is not None:
+    if threshold["fail_under"] is not None or threshold.get("fail_on"):
         status = "PASS" if threshold["passed"] else "FAIL"
         color = c("A") if threshold["passed"] else c("F")
-        lines.append(
-            f"{color}{c('bold')}{status}{c('reset')} - threshold: fail_under={threshold['fail_under']}, "
-            f"actual={score}"
-        )
+        parts = []
+        if threshold["fail_under"] is not None:
+            parts.append(f"fail_under={threshold['fail_under']} actual={score}")
+        if threshold.get("fail_on"):
+            triggered = threshold.get("fail_on_triggered") or []
+            parts.append(
+                f"fail_on={','.join(threshold['fail_on'])}"
+                + (f" (triggered: {','.join(triggered)})" if triggered else "")
+            )
+        lines.append(f"{color}{c('bold')}{status}{c('reset')} - {'; '.join(parts)}")
 
     return "\n".join(lines)
 
@@ -299,9 +317,178 @@ def render_markdown(summary):
         lines.append("</details>")
 
     threshold = summary["threshold"]
-    if threshold["fail_under"] is not None:
+    if threshold["fail_under"] is not None or threshold.get("fail_on"):
         status = "PASS" if threshold["passed"] else "FAIL"
+        parts = []
+        if threshold["fail_under"] is not None:
+            parts.append(f"fail_under={threshold['fail_under']}, actual={score}")
+        if threshold.get("fail_on"):
+            triggered = threshold.get("fail_on_triggered") or []
+            parts.append(
+                f"fail_on={','.join(threshold['fail_on'])}"
+                + (f" (triggered: {','.join(triggered)})" if triggered else "")
+            )
         lines.append("")
-        lines.append(f"**{status}** — threshold: fail_under={threshold['fail_under']}, actual={score}")
+        lines.append(f"**{status}** — {'; '.join(parts)}")
 
     return "\n".join(lines)
+
+
+def _h(text):
+    """Escape HTML special characters in `text`."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def render_html(summary):
+    """Render `summary` as a self-contained HTML page (no external dependencies)."""
+    grade = summary["overall"]["grade"]
+    score = summary["overall"]["score"]
+    mode = summary["mode"]
+    s = summary["summary"]
+
+    grade_color = {"A": "#22c55e", "B": "#84cc16", "C": "#eab308", "D": "#f97316", "F": "#ef4444"}.get(grade, "#6b7280")
+    sev_color = {"error": "#ef4444", "warn": "#f97316", "info": "#3b82f6"}
+
+    # Category rows
+    cat_rows = ""
+    for name, cat in summary["categories"].items():
+        pct = cat["score"]
+        bar_color = "#22c55e" if pct >= 80 else ("#eab308" if pct >= 60 else "#ef4444")
+        cat_rows += (
+            f'<tr><td>{_h(name)}</td>'
+            f'<td><div class="bar-bg"><div class="bar-fg" style="width:{pct}%;background:{bar_color}"></div></div></td>'
+            f'<td class="num">{pct:.1f}</td>'
+            f'<td class="num">{cat["weight"]}</td></tr>\n'
+        )
+
+    # Worst files rows
+    wf_rows = "".join(
+        f'<tr><td class="num">{wf["score"]:.1f}</td><td class="mono">{_h(wf["path"])}</td>'
+        f'<td class="num">{wf["lines"]}</td></tr>\n'
+        for wf in summary["worst_files"]
+    )
+
+    # Issues rows
+    issue_rows = ""
+    for issue in summary["issues"]:
+        sc = sev_color.get(issue["severity"], "#6b7280")
+        issue_rows += (
+            f'<tr><td><span class="badge" style="background:{sc}">{_h(issue["severity"])}</span></td>'
+            f'<td class="mono">{_h(issue["file"])}:{issue["line"]}</td>'
+            f'<td class="mono">{_h(issue["symbol"])}</td>'
+            f'<td>{_h(issue["message"])}</td></tr>\n'
+        )
+
+    diff_note = ""
+    if summary.get("diff"):
+        d = summary["diff"]
+        head = d.get("head") or "working tree"
+        diff_note = f'<p class="dim">Diff: {_h(d["base"])} → {_h(head)} ({len(d["changed_files"])} files changed)</p>'
+
+    threshold = summary["threshold"]
+    gate_html = ""
+    if threshold["fail_under"] is not None:
+        status = "PASS" if threshold["passed"] else "FAIL"
+        gate_color = "#22c55e" if threshold["passed"] else "#ef4444"
+        gate_html = (
+            f'<p style="font-weight:bold;color:{gate_color}">{status} — '
+            f'threshold: fail_under={threshold["fail_under"]}, actual={score}</p>'
+        )
+
+    issues_section = ""
+    if summary["issues"]:
+        issues_section = f"""
+<h2>Issues ({s['issues']})</h2>
+<input id="filter" type="text" placeholder="Filter issues..." oninput="filterIssues(this.value)"
+       style="margin-bottom:8px;padding:4px 8px;width:300px;border:1px solid #d1d5db;border-radius:4px">
+<div style="overflow-x:auto">
+<table id="issue-table">
+<thead><tr><th>Severity</th><th>Location</th><th>Rule</th><th>Message</th></tr></thead>
+<tbody>{issue_rows}</tbody>
+</table>
+</div>
+<script>
+function filterIssues(q) {{
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#issue-table tbody tr');
+  rows.forEach(function(r) {{
+    r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+  }});
+}}
+</script>
+"""
+
+    wf_section = ""
+    if summary["worst_files"]:
+        wf_section = f"""
+<h2>Lowest-scoring files</h2>
+<div style="overflow-x:auto">
+<table>
+<thead><tr><th>Score</th><th>File</th><th>Lines</th></tr></thead>
+<tbody>{wf_rows}</tbody>
+</table>
+</div>
+"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Code Quality Report</title>
+<style>
+:root {{ font-family: system-ui, sans-serif; font-size: 15px; color: #111; background: #fff; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ color: #e5e7eb; background: #111827; }}
+  table {{ border-color: #374151; }}
+  th {{ background: #1f2937; }}
+  tr:nth-child(even) {{ background: #1f2937; }}
+  input {{ background: #1f2937; color: #e5e7eb; border-color: #374151; }}
+}}
+body {{ max-width: 1100px; margin: 0 auto; padding: 24px 16px; }}
+h1 {{ font-size: 1.5rem; margin-bottom: 4px; }}
+h2 {{ font-size: 1.1rem; margin-top: 32px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }}
+.score-badge {{ display:inline-block; padding: 8px 20px; border-radius: 8px;
+               font-size: 2rem; font-weight: bold; color: #fff;
+               background: {grade_color}; margin: 12px 0; }}
+.dim {{ color: #6b7280; font-size: 0.9rem; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
+th, td {{ text-align: left; padding: 6px 10px; border-bottom: 1px solid #e5e7eb; }}
+th {{ font-weight: 600; background: #f9fafb; }}
+tr:nth-child(even) {{ background: #f9fafb; }}
+.num {{ text-align: right; }}
+.mono {{ font-family: monospace; font-size: 0.85rem; word-break: break-all; }}
+.badge {{ display:inline-block; padding:1px 7px; border-radius:4px; font-size:0.78rem;
+          font-weight:600; color:#fff; }}
+.bar-bg {{ background: #e5e7eb; border-radius: 4px; height: 10px; width: 180px; }}
+.bar-fg {{ height: 10px; border-radius: 4px; }}
+.stats {{ display: flex; gap: 24px; flex-wrap: wrap; margin: 16px 0; }}
+.stat {{ text-align: center; }}
+.stat-val {{ font-size: 1.4rem; font-weight: bold; }}
+.stat-lbl {{ font-size: 0.8rem; color: #6b7280; }}
+</style>
+</head>
+<body>
+<h1>Code Quality Report <small class="dim">({_h(mode)} mode)</small></h1>
+{diff_note}
+<div class="score-badge">{score:.1f} / 100 &nbsp; {_h(grade)}</div>
+{gate_html}
+<div class="stats">
+  <div class="stat"><div class="stat-val">{s['files_analyzed']}</div><div class="stat-lbl">files</div></div>
+  <div class="stat"><div class="stat-val">{s['loc']}</div><div class="stat-lbl">LOC</div></div>
+  <div class="stat"><div class="stat-val">{s['functions']}</div><div class="stat-lbl">functions</div></div>
+  <div class="stat"><div class="stat-val">{s['issues']}</div><div class="stat-lbl">issues</div></div>
+</div>
+
+<h2>Category Scores</h2>
+<table>
+<thead><tr><th>Category</th><th>Score</th><th>Score/100</th><th>Weight</th></tr></thead>
+<tbody>{cat_rows}</tbody>
+</table>
+
+{wf_section}
+{issues_section}
+
+<p class="dim">Generated {_h(summary['generated_at'])} · codequality {_h(summary['version'])}</p>
+</body>
+</html>"""

@@ -5,7 +5,7 @@ import sys
 
 from codequality import (
     __version__, ai_report, api_diff, arch_conformance, baseline as baseline_mod, churn, commit_lint,
-    complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, conventions,
+    complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, config_validate, conventions,
     dead_code_confidence,
     dependency_check, dependency_risk, edit_distance, env_check, feature_flags, flakiness, hallucination_metrics,
     history_secrets, hotspots, large_files, migration_check, mutation, orphaned_config, ownership, pipeline,
@@ -15,7 +15,7 @@ from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
-from codequality.report import build_summary, render_json, render_markdown, render_sarif, render_text
+from codequality.report import build_summary, render_html, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import discover_files, scan_changed, scan_repo
 from codequality.scorer import compute_scores
 
@@ -23,7 +23,7 @@ from codequality.scorer import compute_scores
 def _add_common_args(p):
     p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
     p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
-    p.add_argument("--format", choices=["text", "json", "markdown", "sarif"], default="text")
+    p.add_argument("--format", choices=["text", "json", "markdown", "sarif", "html"], default="text")
     p.add_argument("--output", "-o", help="Write report to a file instead of stdout")
     p.add_argument("--fail-under", type=float, default=None, help="Exit non-zero if the overall score is below this")
     p.add_argument("--no-color", action="store_true")
@@ -54,6 +54,12 @@ def _add_common_args(p):
     p.add_argument(
         "--test-command", default=None,
         help=f'Command to run under coverage, as args after "python -m" (default: "{DEFAULT_TEST_COMMAND}")'
+    )
+    p.add_argument(
+        "--fail-on", metavar="CATEGORY",
+        help="Exit non-zero if any issue in this category exists, regardless of the overall score "
+             "(e.g. --fail-on security).  Repeatable (or comma-separated) to gate on multiple categories.",
+        action="append", default=[],
     )
 
 
@@ -581,6 +587,19 @@ def _add_arch_conformance_subparser(sub):
     ac_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_config_check_subparser(sub):
+    cc_p = sub.add_parser(
+        "config-check",
+        help="Validate a codequality config file (.codequality.toml/.json or pyproject.toml [tool.codequality]) "
+             "for unknown keys, wrong value types, and contradictory settings -- purely structural, "
+             "no scanning"
+    )
+    cc_p.add_argument("path", nargs="?", default=".", help="Repo root to find the config in (default: .)")
+    cc_p.add_argument("--config", help="Explicit path to a config file")
+    cc_p.add_argument("--format", choices=["text", "json"], default="text")
+    cc_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -620,6 +639,7 @@ def build_parser():
     _add_ai_report_subparser(sub)
     _add_dead_code_confidence_subparser(sub)
     _add_conventions_subparser(sub)
+    _add_config_check_subparser(sub)
 
     return parser
 
@@ -651,6 +671,8 @@ def _render(summary, fmt):
         return render_markdown(summary)
     if fmt == "sarif":
         return render_sarif(summary)
+    if fmt == "html":
+        return render_html(summary)
     return render_text(summary, use_color=sys.stdout.isatty())
 
 
@@ -672,7 +694,7 @@ def cmd_scan(args):
     if args.baseline:
         baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
     score_result = compute_scores(file_metrics, config)
-    summary = build_summary(file_metrics, score_result, "scan", root, fail_under=fail_under)
+    summary = build_summary(file_metrics, score_result, "scan", root, fail_under=fail_under, fail_on=args.fail_on)
 
     if args.record_history:
         append_entry(args.record_history, summary)
@@ -717,7 +739,7 @@ def cmd_diff(args):
         "changed_files": sorted(changed_files.keys()),
         "changed_lines_count": sum(len(v) for v in changed_files.values()),
     }
-    summary = build_summary(file_metrics, score_result, "diff", root, diff_info=diff_info, fail_under=fail_under)
+    summary = build_summary(file_metrics, score_result, "diff", root, diff_info=diff_info, fail_under=fail_under, fail_on=args.fail_on)
 
     _emit(_render(summary, args.format), args.output)
     return 0 if summary["threshold"]["passed"] else 1
@@ -1268,6 +1290,24 @@ def cmd_arch_conformance(args):
     return 0
 
 
+def cmd_config_check(args):
+    """Handle `codequality config-check`: validate a config file for
+    unknown keys, wrong types, and contradictory settings.
+    """
+    import json as _json
+    root = os.path.abspath(args.path)
+    path, issues = config_validate.validate(root=root, explicit_path=getattr(args, "config", None))
+    if args.format == "json":
+        text = _json.dumps(
+            {"config_file": path, "issues": [i.to_dict() for i in issues]}, indent=2
+        )
+    else:
+        text = config_validate.render_text(path, issues)
+    _emit(text, args.output)
+    errors = [i for i in issues if i.severity == "error"]
+    return 1 if errors else 0
+
+
 _COMMANDS = {
     "scan": cmd_scan,
     "diff": cmd_diff,
@@ -1301,6 +1341,7 @@ _COMMANDS = {
     "ai-report": cmd_ai_report,
     "dead-code-confidence": cmd_dead_code_confidence,
     "conventions": cmd_conventions,
+    "config-check": cmd_config_check,
 }
 
 

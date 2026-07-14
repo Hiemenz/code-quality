@@ -143,9 +143,21 @@ def f_string_no_placeholder_issues(tree, path, only_lines=None):
     """Flag f-strings that contain no {} placeholders -- the 'f' prefix does
     nothing and may be hiding a missing interpolation.
     """
+    # Format-spec sub-strings like `{label:<28}` have their `<28` part stored
+    # as a nested JoinedStr on FormattedValue.format_spec.  Those inner nodes
+    # contain only Constant values (no FormattedValue), but they're valid parts
+    # of a real f-string and must not be flagged.  Collect them first so we can
+    # skip them in the main walk.
+    format_spec_nodes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FormattedValue) and node.format_spec is not None:
+            format_spec_nodes.add(id(node.format_spec))
+
     issues = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.JoinedStr) or not _in_scope(node, only_lines):
+            continue
+        if id(node) in format_spec_nodes:
             continue
         if not any(isinstance(v, ast.FormattedValue) for v in node.values):
             issues.append(Issue(

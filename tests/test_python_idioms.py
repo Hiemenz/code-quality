@@ -159,6 +159,14 @@ class TestFStringNoPlaceholder(unittest.TestCase):
         issues = f_string_no_placeholder_issues(_tree('x = f""\n'), "f.py")
         self.assertEqual(len(issues), 1)
 
+    def test_format_spec_inner_joinedstr_not_flagged(self):
+        # f"{label:<28}" has a nested JoinedStr for the "<28" format spec.
+        # That inner node contains only a Constant, not a FormattedValue, but
+        # it must NOT be flagged -- only the outer f-string matters, and it
+        # does have a placeholder ({label}).
+        issues = f_string_no_placeholder_issues(_tree('x = f"{label:<28}"\n'), "f.py")
+        self.assertEqual(issues, [])
+
 
 class TestRedundantElse(unittest.TestCase):
     def test_else_after_return_flagged(self):

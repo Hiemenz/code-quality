@@ -13,10 +13,17 @@ class TestImplicitStringConcat(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].symbol, "implicit-string-concat")
 
-    def test_adjacent_strings_across_lines_flagged(self):
-        src = '(\n    "hello"\n    "world"\n)\n'
+    def test_adjacent_strings_across_lines_in_list_flagged(self):
+        # Inside [...] a missing comma is the likely bug -- flag it.
+        src = '[\n    "hello"\n    "world"\n]\n'
         issues = _issues(src)
         self.assertEqual(len(issues), 1)
+
+    def test_adjacent_strings_across_lines_in_parens_not_flagged(self):
+        # Inside (...) across lines is intentional string splitting -- don't flag.
+        src = '(\n    "hello"\n    "world"\n)\n'
+        issues = _issues(src)
+        self.assertEqual(issues, [])
 
     def test_explicit_plus_not_flagged(self):
         self.assertEqual(_issues('"hello" + "world"\n'), [])
@@ -38,8 +45,8 @@ class TestImplicitStringConcat(unittest.TestCase):
         self.assertEqual(len(issues), 2)
 
     def test_only_lines_restricts(self):
-        # "world" is on line 3 inside parens -- a real implicit concat
-        src = '(\n    "hello"\n    "world"\n)\n'
+        # "world" is on line 3 inside brackets -- a real missing-comma case
+        src = '[\n    "hello"\n    "world"\n]\n'
         issues = _issues(src, only_lines={3})
         self.assertEqual(len(issues), 1)
 

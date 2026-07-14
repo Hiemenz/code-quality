@@ -12,9 +12,16 @@ common mistake is a missing comma in a list/tuple:
     ]
 
 Intentional multi-line string splitting (a long SQL query or error message
-split across source lines) produces the same token pattern, so all findings
-are `warn` severity with a message that acknowledges both interpretations --
-add `+` to make it explicit, or a comma if the intent was a separator.
+split across source lines inside parentheses) is common and deliberate, so
+the check uses bracket context to reduce noise:
+
+  - Always flagged: two strings on the SAME line (`x = "a" "b"`) -- almost
+    always a typo; no legitimate style splits strings on a single line.
+  - Flagged inside [ / { (list, set, dict contexts): missing-comma bugs happen
+    here, intentional splits don't.
+  - NOT flagged inside ( ... ) across lines: splitting a long string across
+    parenthesised lines is a well-understood idiom for readability
+    (`p.add_argument("--flag", "long help text " "that continues here")`).
 """
 
 import io
@@ -25,23 +32,21 @@ from codequality.analyzers.base import Issue
 SYMBOL = "implicit-string-concat"
 
 # NL (non-logical newline inside brackets) is ignored so that multi-line
-# implicit concatenations inside parens/brackets are still detected.
-# NEWLINE (logical end-of-statement) is NOT ignored -- it resets adjacency
-# tracking so that "a" # comment\n"b" (two separate statements) is not flagged.
+# implicit concatenations inside [...] / {...} are still detected.
+# NEWLINE (logical end-of-statement) resets adjacency: two strings on
+# separate top-level lines are two separate expression statements, not a concat.
 _IGNORED = frozenset({
     _tokenize.NL, _tokenize.COMMENT,
     _tokenize.INDENT, _tokenize.DEDENT, _tokenize.ENCODING,
 })
 
 # Python 3.12+ tokenises f-strings as FSTRING_START / FSTRING_MIDDLE / FSTRING_END
-# rather than a single STRING token.  Detect them when available.
+# rather than a single STRING token.
 _FSTRING_START = getattr(_tokenize, "FSTRING_START", None)
-_FSTRING_MIDDLE = getattr(_tokenize, "FSTRING_MIDDLE", None)
 _FSTRING_END = getattr(_tokenize, "FSTRING_END", None)
 
-# Extra tokens that appear inside an f-string expression that should not
-# reset adjacency tracking while we're inside the f-string.
-_FSTRING_INNER = frozenset(t for t in (_FSTRING_MIDDLE,) if t is not None)
+# Bracket types where a missing comma is the likely bug.
+_FLAGGED_BRACKETS = frozenset({"[", "{"})
 
 
 def implicit_string_concat_issues(source, path, only_lines=None):
@@ -52,15 +57,26 @@ def implicit_string_concat_issues(source, path, only_lines=None):
         return []
 
     issues = []
-    prev_str = None
-    fstring_depth = 0  # >0 while inside f-string braces (Python 3.12+)
+    prev_str = None          # last STRING/FSTRING_END token, or None
+    fstring_depth = 0        # >0 while inside a Python 3.12+ f-string
+    bracket_stack = []       # stack of opening bracket chars: '(', '[', '{'
+
+    def _innermost_bracket():
+        return bracket_stack[-1] if bracket_stack else None
+
+    def _should_flag(second_tok):
+        """True when an implicit concat between prev_str and second_tok is reportable."""
+        # Same line: always a typo, regardless of bracket context.
+        if prev_str is not None and prev_str.start[0] == second_tok.start[0]:
+            return True
+        # Cross-line: only flag inside [...] or {...} where a comma is likely missing.
+        return _innermost_bracket() in _FLAGGED_BRACKETS
 
     for tok in tokens:
         # --- Handle Python 3.12+ f-string tokens ---
         if _FSTRING_START is not None and tok.type == _FSTRING_START:
             if fstring_depth == 0:
-                # Outermost f-string start: check adjacency, then begin tracking
-                if prev_str is not None:
+                if prev_str is not None and _should_flag(tok):
                     lineno = tok.start[0]
                     if only_lines is None or lineno in only_lines:
                         issues.append(Issue(
@@ -73,22 +89,27 @@ def implicit_string_concat_issues(source, path, only_lines=None):
         if _FSTRING_END is not None and tok.type == _FSTRING_END:
             fstring_depth -= 1
             if fstring_depth == 0:
-                prev_str = tok  # f-string ended; track position for next token
+                prev_str = tok
             continue
         if fstring_depth > 0:
-            # Inside an f-string body: skip all tokens (don't reset prev_str)
             continue
 
         # --- Regular token handling ---
         if tok.type in _IGNORED:
             continue
         if tok.type == _tokenize.NEWLINE:
-            # Logical end-of-statement: break adjacency so that
-            # '"a"  # comment\n"b"' (two separate statements) is not flagged.
             prev_str = None
             continue
+        if tok.type == _tokenize.OP:
+            ch = tok.string
+            if ch in ("(", "[", "{"):
+                bracket_stack.append(ch)
+            elif ch in (")", "]", "}") and bracket_stack:
+                bracket_stack.pop()
+            prev_str = None  # any operator/punctuation breaks adjacency
+            continue
         if tok.type == _tokenize.STRING:
-            if prev_str is not None:
+            if prev_str is not None and _should_flag(tok):
                 lineno = tok.start[0]
                 if only_lines is None or lineno in only_lines:
                     issues.append(Issue(

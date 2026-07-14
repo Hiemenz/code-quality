@@ -22,6 +22,36 @@ Two modes:
 Both work in a pipeline (JSON/markdown output, exit codes for gating) and
 standalone on your machine (colored terminal output).
 
+## Intent
+
+Linters catch style violations; type checkers catch type errors. Neither
+answers the question a reviewer actually asks: is this change, or this
+codebase, in good shape? `codequality` exists to turn that judgment call
+into a number you can compute the same way every time, so it can gate a
+merge instead of just informing one person's opinion.
+
+That leads to a few deliberate choices:
+
+- **Deterministic over clever.** Every check is a fixed formula over
+  parsed code or git history — no LLM calls, no network access, no
+  run-to-run variance. A score you can't reproduce isn't a score you can
+  gate CI on.
+- **Diff-scoped by default.** Most repos have pre-existing debt that no
+  one wants to clean up before merging an unrelated PR. `diff` scores
+  only what changed, so new code is held to a bar without requiring the
+  whole repo to be clean first; `scan` is there separately for tracking
+  overall health over time.
+- **Breadth over a single metric.** A "quality score" that only measures
+  complexity misses secrets committed to git history, dependencies that
+  are declared but unused, tests that run code without asserting
+  anything, config drift between environments, and dozens of other
+  failure modes that are individually easy to check for and easy to miss
+  by hand. The checks accumulate rather than replace each other.
+- **AI-authorship-aware, not AI-powered.** As more commits are AI-assisted,
+  several checks (hallucinated imports, edit-distance survival, rework
+  rate) specifically compare AI-assisted vs. human commits using git
+  blame — without ever calling an LLM to do it.
+
 ## Install
 
 ```bash

@@ -70,3 +70,42 @@ class TestStringConcatInLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLoopLocalAccumulatorSkipped(unittest.TestCase):
+    """A += whose target is plain-assigned earlier in the same loop body is
+    rebuilt every iteration -- not a cross-iteration accumulator."""
+
+    def test_assigned_before_augassign_not_flagged(self):
+        src = (
+            "for item in items:\n"
+            "    label = str(item)\n"
+            "    if item.extra:\n"
+            "        label += ' (extra)'\n"
+        )
+        self.assertEqual(_issues(src), [])
+
+    def test_true_accumulator_still_flagged(self):
+        src = (
+            "s = ''\n"
+            "for item in items:\n"
+            "    s += str(item)[:0] + 'x'\n"
+        )
+        self.assertEqual(len(_issues(src)), 1)
+
+    def test_assignment_after_augassign_still_flagged(self):
+        src = (
+            "for item in items:\n"
+            "    s += 'x'\n"
+            "    t = 'unrelated'\n"
+        )
+        self.assertEqual(len(_issues(src)), 1)
+
+    def test_conditional_reset_skipped_by_design(self):
+        src = (
+            "for item in items:\n"
+            "    if item.first:\n"
+            "        s = ''\n"
+            "    s += 'x'\n"
+        )
+        self.assertEqual(_issues(src), [])

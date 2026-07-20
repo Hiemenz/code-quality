@@ -34,5 +34,7 @@ packages = ["codequality", "codequality.analyzers"]
 
 [tool.codequality]
 # Self-scan config for this repo.
+exclude = ["tests/fixtures/*"]  # intentionally messy files used as test inputs
+
 [tool.codequality.thresholds]
 fail_under = 60

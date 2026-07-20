@@ -15,7 +15,7 @@ from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
-from codequality.report import build_summary, render_html, render_json, render_markdown, render_sarif, render_text
+from codequality.report import build_summary, render_badge, render_html, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import discover_files, scan_changed, scan_repo
 from codequality.scorer import compute_scores
 
@@ -23,10 +23,14 @@ from codequality.scorer import compute_scores
 def _add_common_args(p):
     p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
     p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
-    p.add_argument("--format", choices=["text", "json", "markdown", "sarif", "html"], default="text")
+    p.add_argument("--format", choices=["text", "json", "markdown", "sarif", "html", "badge"], default="text")
     p.add_argument("--output", "-o", help="Write report to a file instead of stdout")
     p.add_argument("--fail-under", type=float, default=None, help="Exit non-zero if the overall score is below this")
     p.add_argument("--no-color", action="store_true")
+    p.add_argument(
+        "--jobs", "-j", type=int, default=1, metavar="N",
+        help="Analyze files with N parallel processes (0 = one per CPU; default 1). Output is identical for any value.",
+    )
     p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
     p.add_argument("--no-generic", action="store_true", help="Only analyze Python files (skip heuristic analyzers)")
     p.add_argument(
@@ -600,6 +604,51 @@ def _add_config_check_subparser(sub):
     cc_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_explain_subparser(sub):
+    explain_p = sub.add_parser(
+        "explain", help="Explain a rule symbol (as shown in issue output), or list all rules"
+    )
+    explain_p.add_argument("rule", nargs="?", help="Rule symbol to explain, e.g. mutable-default-arg")
+    explain_p.add_argument("--list", action="store_true", dest="list_rules", help="List every rule with its category")
+    explain_p.add_argument("--format", choices=["text", "json"], default="text")
+
+
+def cmd_explain(args):
+    """Handle `codequality explain`: rule lookup, returns the process exit code."""
+    from codequality.rules import RULES, all_rules
+
+    if args.list_rules or not args.rule:
+        if args.format == "json":
+            print(json.dumps(RULES, indent=2, sort_keys=True))
+        else:
+            width = max(len(s) for s in RULES)
+            current_category = None
+            for symbol, entry in all_rules():
+                if entry["category"] != current_category:
+                    current_category = entry["category"]
+                    print(f"\n[{current_category}]")
+                scope = "" if entry["scope"] == "scan" else f"  (via `codequality {entry['scope']}`)"
+                print(f"  {symbol:<{width}}  {entry['description']}{scope}")
+        return 0
+
+    entry = RULES.get(args.rule)
+    if entry is None:
+        matches = [s for s in sorted(RULES) if args.rule in s]
+        print(f"Unknown rule: {args.rule}", file=sys.stderr)
+        if matches:
+            print("Did you mean: " + ", ".join(matches), file=sys.stderr)
+        return 1
+    if args.format == "json":
+        print(json.dumps({args.rule: entry}, indent=2))
+    else:
+        emitted_by = "scan / diff" if entry["scope"] == "scan" else f"codequality {entry['scope']}"
+        print(args.rule)
+        print(f"  category:    {entry['category']}")
+        print(f"  emitted by:  {emitted_by}")
+        print(f"  {entry['description']}")
+    return 0
+
+
 def build_parser():
     """Construct the argparse parser for every subcommand."""
     parser = argparse.ArgumentParser(
@@ -640,6 +689,7 @@ def build_parser():
     _add_dead_code_confidence_subparser(sub)
     _add_conventions_subparser(sub)
     _add_config_check_subparser(sub)
+    _add_explain_subparser(sub)
 
     return parser
 
@@ -671,6 +721,8 @@ def _render(summary, fmt):
         return render_markdown(summary)
     if fmt == "sarif":
         return render_sarif(summary)
+    if fmt == "badge":
+        return render_badge(summary)
     if fmt == "html":
         return render_html(summary)
     return render_text(summary, use_color=sys.stdout.isatty())
@@ -690,7 +742,7 @@ def cmd_scan(args):
     config = _load_config(args, root)
     fail_under = args.fail_under if args.fail_under is not None else config.fail_under
 
-    file_metrics = scan_repo(root, config)
+    file_metrics = scan_repo(root, config, jobs=args.jobs)
     if args.baseline:
         baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
     score_result = compute_scores(file_metrics, config)
@@ -729,7 +781,7 @@ def cmd_diff(args):
         return 0
 
     task_description = args.task_description if args.task_description is not None else get_last_commit_subject(root)
-    file_metrics = scan_changed(root, config, changed_files, base=base, task_description=task_description)
+    file_metrics = scan_changed(root, config, changed_files, base=base, task_description=task_description, jobs=args.jobs)
     if args.baseline:
         baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
     score_result = compute_scores(file_metrics, config)
@@ -1309,6 +1361,7 @@ def cmd_config_check(args):
 
 
 _COMMANDS = {
+    "explain": cmd_explain,
     "scan": cmd_scan,
     "diff": cmd_diff,
     "trend": cmd_trend,

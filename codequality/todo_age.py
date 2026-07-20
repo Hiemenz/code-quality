@@ -80,7 +80,7 @@ def _commit_metadata(cwd, sha, marker, cache):
         else:
             date_str, _, body = raw.partition(_FS)
             cache[sha] = {
-                "date": datetime.fromisoformat(date_str.strip()),
+                "date": datetime.fromisoformat(date_str.strip().replace("Z", "+00:00")),
                 "is_ai": marker.lower() in body.lower(),
             }
     return cache[sha]

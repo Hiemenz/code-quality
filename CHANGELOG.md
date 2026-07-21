@@ -23,8 +23,17 @@ project follows semantic versioning.
   scan + PR diff gate + sticky score comment.
 - Release workflow: version tags publish to PyPI via trusted publishing
   and create a GitHub release.
-- CI now runs the test suite across Python 3.9 / 3.11 / 3.13 (previously
+- CI now runs the test suite across Python 3.11 / 3.12 / 3.13 (previously
   only the self-scan ran in CI).
+
+### Changed
+
+- Minimum Python bumped to 3.11. The `>=3.9` claim was never actually
+  functional: `tomllib` (pyproject parsing) and `sys.stdlib_module_names`
+  (the hallucinated-stdlib-attribute check) require 3.11 and 3.10
+  respectively, so several checks silently no-op'd on 3.9/3.10. Requiring
+  3.11 keeps the tool dependency-free rather than adding a `tomli`
+  backport.
 
 ### Changed
 

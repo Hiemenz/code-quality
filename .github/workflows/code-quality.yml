@@ -11,9 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (pyproject requires-python >=3.9), a middle
+        # Oldest supported (pyproject requires-python >=3.11), a middle
         # release, and the newest stable.
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 

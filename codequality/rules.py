@@ -211,6 +211,10 @@ RULES = {
         "category": "security", "scope": "scan",
         "description": "Logging with pre-formatted f-string; pass lazy %-style args so formatting only happens when the level is enabled.",
     },
+    "catastrophic-regex": {
+        "category": "security", "scope": "scan",
+        "description": "Regex has nested unbounded quantifiers (e.g. (a+)+); a non-matching input triggers exponential ReDoS backtracking.",
+    },
     # -- correctness -----------------------------------------------------
     "syntax-error": {
         "category": "correctness", "scope": "scan",
@@ -316,6 +320,18 @@ RULES = {
         "category": "correctness", "scope": "scan",
         "description": "Function body is only pass/.../NotImplementedError — looks shipped but does nothing.",
     },
+    "naive-datetime": {
+        "category": "correctness", "scope": "scan",
+        "description": "datetime.now()/.today()/.utcnow() called without tz= returns a naive datetime; use timezone-aware calls.",
+    },
+    "float-equality": {
+        "category": "correctness", "scope": "scan",
+        "description": "Exact == or != comparison against a float literal; floats rarely compare bit-exact. Use math.isclose().",
+    },
+    "mutable-global": {
+        "category": "correctness", "scope": "scan",
+        "description": "Function declares a name `global` and assigns to it; module-level mutable state is order-dependent and hard to test.",
+    },
     # -- standalone subcommands ------------------------------------------
     "removed-public-file": {
         "category": "structure", "scope": "api-diff",
@@ -376,6 +392,10 @@ RULES = {
     "sql-migration-missing-down": {
         "category": "correctness", "scope": "migration-check",
         "description": "SQL migration has an up script but no matching down/rollback script.",
+    },
+    "config-drift": {
+        "category": "correctness", "scope": "config-drift",
+        "description": "Key present in one sibling environment config file but missing from another — likely a forgotten addition.",
     },
 }
 

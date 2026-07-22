@@ -4,18 +4,19 @@ import os
 import sys
 
 from codequality import (
-    __version__, ai_report, api_diff, arch_conformance, baseline as baseline_mod, churn, commit_lint,
+    __version__, ai_report, annotation_coverage, api_diff, arch_conformance, baseline as baseline_mod, churn,
+    commit_lint,
     complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, config_validate, conventions,
     dead_code_confidence,
     dependency_check, dependency_risk, edit_distance, env_check, feature_flags, flakiness, hallucination_metrics,
     history_secrets, hotspots, large_files, migration_check, mutation, orphaned_config, ownership, pipeline,
-    property_scaffold, todo_age,
+    project_init, property_scaffold, report_compare, suppression_debt, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
-from codequality.report import build_summary, render_badge, render_html, render_json, render_markdown, render_sarif, render_text
+from codequality.report import build_summary, render_badge, render_gitlab, render_html, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import discover_files, scan_changed, scan_repo
 from codequality.scorer import compute_scores
 
@@ -23,7 +24,7 @@ from codequality.scorer import compute_scores
 def _add_common_args(p):
     p.add_argument("path", nargs="?", default=".", help="Repo/directory root to analyze (default: .)")
     p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
-    p.add_argument("--format", choices=["text", "json", "markdown", "sarif", "html", "badge"], default="text")
+    p.add_argument("--format", choices=["text", "json", "markdown", "sarif", "html", "badge", "gitlab"], default="text")
     p.add_argument("--output", "-o", help="Write report to a file instead of stdout")
     p.add_argument("--fail-under", type=float, default=None, help="Exit non-zero if the overall score is below this")
     p.add_argument("--no-color", action="store_true")
@@ -604,6 +605,107 @@ def _add_config_check_subparser(sub):
     cc_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
 
 
+def _add_annotation_coverage_subparser(sub):
+    ac_p = sub.add_parser(
+        "annotation-coverage",
+        help="Report what fraction of public function signatures have type annotations "
+             "(Python only; purely structural AST analysis, no type-checker invoked)"
+    )
+    ac_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to scan (default: .)")
+    ac_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    ac_p.add_argument(
+        "--min-coverage", type=float, default=0.0, metavar="PCT",
+        help="Highlight functions/files below this percentage (0–100, default: 0 -- informational only)"
+    )
+    ac_p.add_argument(
+        "--include-dunders", action="store_true",
+        help="Include dunder methods (__init__, __str__, ...) in the coverage count"
+    )
+    ac_p.add_argument("--format", choices=["text", "json"], default="text")
+    ac_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_compare_subparser(sub):
+    cmp_p = sub.add_parser(
+        "compare",
+        help="Compare two scan --format json reports and show the score delta; "
+             "exit non-zero on regression beyond --tolerance"
+    )
+    cmp_p.add_argument("before", metavar="BEFORE.json", help="Path to the earlier scan JSON report")
+    cmp_p.add_argument("after", metavar="AFTER.json", help="Path to the later scan JSON report")
+    cmp_p.add_argument(
+        "--tolerance", type=float, default=0.0,
+        help="Acceptable score drop in points before counting as a regression (default: 0 -- any drop fails)"
+    )
+    cmp_p.add_argument("--format", choices=["text", "json"], default="text")
+    cmp_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_init_subparser(sub):
+    init_p = sub.add_parser(
+        "init",
+        help="Scaffold a .codequality.toml config and a GitHub Actions CI workflow "
+             "into the target repository"
+    )
+    init_p.add_argument("path", nargs="?", default=".", help="Repo root to initialise (default: .)")
+    init_p.add_argument(
+        "--fail-under", type=float, default=70.0,
+        help="fail_under threshold to write into the config and CI workflow (default: 70)"
+    )
+    init_p.add_argument("--force", action="store_true", help="Overwrite existing files")
+    init_p.add_argument(
+        "--config-only", action="store_true", help="Only create .codequality.toml, skip the CI workflow"
+    )
+    init_p.add_argument(
+        "--ci-only", action="store_true", help="Only create the CI workflow, skip .codequality.toml"
+    )
+
+
+def _add_suppression_debt_subparser(sub):
+    sd_p = sub.add_parser(
+        "suppression-debt",
+        help="Age blanket (unscoped) inline suppressions (# noqa, # type: ignore, "
+             "codequality: ignore) via git blame -- shows how long each has been "
+             "silencing the checker without a specific rule listed"
+    )
+    sd_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to scan (default: .)")
+    sd_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    sd_p.add_argument(
+        "--marker", default=suppression_debt.DEFAULT_MARKER,
+        help=f'Substring in the commit message that marks it AI-assisted '
+             f'(default: "{suppression_debt.DEFAULT_MARKER}")'
+    )
+    sd_p.add_argument(
+        "--stale-days", type=int, default=suppression_debt.DEFAULT_STALE_DAYS,
+        help=f"Age in days after which a blanket suppression is flagged stale "
+             f"(default: {suppression_debt.DEFAULT_STALE_DAYS})"
+    )
+    sd_p.add_argument("--format", choices=["text", "json"], default="text")
+    sd_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_fix_subparser(sub):
+    fix_p = sub.add_parser(
+        "fix",
+        help="Auto-fix the deterministic style rules that have a single correct rewrite "
+             "(trailing-whitespace, f-string-no-placeholder, comparison-to-none/true, redundant-else)"
+    )
+    fix_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to fix (default: .)")
+    fix_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    fix_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    fix_p.add_argument("--no-generic", action="store_true", help="Only analyze Python files")
+    fix_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview changes as a unified diff without writing any files"
+    )
+    fix_p.add_argument(
+        "--rules", metavar="RULE",
+        help="Comma-separated list of rules to fix (default: all fixable rules). "
+             "Choices: trailing-whitespace, f-string-no-placeholder, comparison-to-none, "
+             "comparison-to-true, redundant-else",
+    )
+
+
 def _add_explain_subparser(sub):
     explain_p = sub.add_parser(
         "explain", help="Explain a rule symbol (as shown in issue output), or list all rules"
@@ -611,6 +713,112 @@ def _add_explain_subparser(sub):
     explain_p.add_argument("rule", nargs="?", help="Rule symbol to explain, e.g. mutable-default-arg")
     explain_p.add_argument("--list", action="store_true", dest="list_rules", help="List every rule with its category")
     explain_p.add_argument("--format", choices=["text", "json"], default="text")
+
+
+def cmd_annotation_coverage(args):
+    """Handle `codequality annotation-coverage`: type-annotation coverage report."""
+    root = os.path.abspath(args.path)
+    result = annotation_coverage.compute(
+        root,
+        exclude=args.exclude,
+        min_coverage=args.min_coverage,
+        include_dunders=args.include_dunders,
+    )
+    if args.format == "json":
+        text = json.dumps(result, indent=2)
+    else:
+        text = annotation_coverage.render_text(result)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_compare(args):
+    """Handle `codequality compare`: delta between two scan JSON reports."""
+    for path in (args.before, args.after):
+        if not os.path.isfile(path):
+            print(f"error: file not found: {path}", file=sys.stderr)
+            return 2
+    try:
+        before = report_compare.load_report(args.before)
+        after = report_compare.load_report(args.after)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"error: could not read report: {e}", file=sys.stderr)
+        return 2
+
+    delta = report_compare.compare(before, after)
+    if args.format == "json":
+        text = json.dumps(delta, indent=2)
+    else:
+        text = report_compare.render_text(delta, args.tolerance)
+    _emit(text, args.output)
+    return 1 if report_compare.is_regression(delta, args.tolerance) else 0
+
+
+def cmd_init(args):
+    """Handle `codequality init`: scaffold config and CI workflow."""
+    root = os.path.abspath(args.path)
+    results = project_init.init(
+        root,
+        fail_under=args.fail_under,
+        config_only=args.config_only,
+        ci_only=args.ci_only,
+        force=args.force,
+    )
+    print(project_init.render_text(results, root))
+    return 0
+
+
+def cmd_suppression_debt(args):
+    """Handle `codequality suppression-debt`: age blanket suppression comments."""
+    root = os.path.abspath(args.path)
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+    try:
+        entries = suppression_debt.compute(
+            root, marker=args.marker, stale_days=args.stale_days, exclude=args.exclude
+        )
+    except GitError as e:
+        print(f"error: git failed: {e}", file=sys.stderr)
+        return 2
+    if args.format == "json":
+        text = json.dumps(entries, indent=2)
+    else:
+        text = suppression_debt.render_text(entries, args.stale_days)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_fix(args):
+    """Handle `codequality fix`: apply mechanical style rewrites in-place."""
+    from codequality.fixer import FIXABLE_RULES, fix_issues, render_text
+
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+
+    if args.rules:
+        requested = {r.strip() for r in args.rules.split(",")}
+        unknown = requested - FIXABLE_RULES
+        if unknown:
+            print(f"error: unknown rule(s): {', '.join(sorted(unknown))}", file=sys.stderr)
+            print(f"Fixable rules: {', '.join(sorted(FIXABLE_RULES))}", file=sys.stderr)
+            return 2
+        active_rules = requested
+    else:
+        active_rules = FIXABLE_RULES
+
+    file_metrics = scan_repo(root, config)
+    score_result = compute_scores(file_metrics, config)
+    summary = build_summary(file_metrics, score_result, "scan", root)
+
+    fixable = [i for i in summary["issues"] if i.get("symbol") in active_rules]
+    if not fixable:
+        print("No fixable issues found.")
+        return 0
+
+    results = fix_issues(root, fixable, dry_run=args.dry_run)
+    print(render_text(results, dry_run=args.dry_run))
+    return 0
 
 
 def cmd_explain(args):
@@ -689,6 +897,11 @@ def build_parser():
     _add_dead_code_confidence_subparser(sub)
     _add_conventions_subparser(sub)
     _add_config_check_subparser(sub)
+    _add_annotation_coverage_subparser(sub)
+    _add_compare_subparser(sub)
+    _add_init_subparser(sub)
+    _add_suppression_debt_subparser(sub)
+    _add_fix_subparser(sub)
     _add_explain_subparser(sub)
 
     return parser
@@ -723,6 +936,8 @@ def _render(summary, fmt):
         return render_sarif(summary)
     if fmt == "badge":
         return render_badge(summary)
+    if fmt == "gitlab":
+        return render_gitlab(summary)
     if fmt == "html":
         return render_html(summary)
     return render_text(summary, use_color=sys.stdout.isatty())
@@ -1361,6 +1576,11 @@ def cmd_config_check(args):
 
 
 _COMMANDS = {
+    "annotation-coverage": cmd_annotation_coverage,
+    "compare": cmd_compare,
+    "init": cmd_init,
+    "suppression-debt": cmd_suppression_debt,
+    "fix": cmd_fix,
     "explain": cmd_explain,
     "scan": cmd_scan,
     "diff": cmd_diff,

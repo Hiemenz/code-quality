@@ -297,6 +297,42 @@ def render_sarif(summary):
     return json.dumps(sarif, indent=2, sort_keys=False)
 
 
+# codequality severity -> GitLab Code Quality severity vocabulary.
+# GitLab accepts info/minor/major/critical/blocker; map error->critical so
+# it stands out in the MR widget, warn->major, info->minor.
+_GITLAB_SEVERITY = {"error": "critical", "warn": "major", "info": "minor"}
+
+
+def _gitlab_fingerprint(issue):
+    """Stable content hash so GitLab can track an issue across pushes."""
+    import hashlib
+
+    key = f"{issue['file']}:{issue['line']}:{issue['symbol']}:{issue['message']}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def render_gitlab(summary):
+    """Render `summary` as a GitLab Code Quality report.
+
+    This is GitLab's own JSON schema (a subset of the Code Climate format);
+    point a CI job's `artifacts:reports:codequality` at the output and the
+    findings render inline in merge-request diffs, the GitLab counterpart to
+    SARIF for GitHub. See
+    https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format
+    """
+    report = [
+        {
+            "description": i["message"],
+            "check_name": i["symbol"],
+            "fingerprint": _gitlab_fingerprint(i),
+            "severity": _GITLAB_SEVERITY.get(i["severity"], "minor"),
+            "location": {"path": i["file"], "lines": {"begin": max(1, i["line"])}},
+        }
+        for i in summary["issues"]
+    ]
+    return json.dumps(report, indent=2)
+
+
 def render_markdown(summary):
     """Render `summary` as markdown, suitable for posting as a PR comment."""
     grade = summary["overall"]["grade"]

@@ -69,41 +69,46 @@ def comparison_idiom_issues(tree, path, only_lines=None):
     return issues
 
 
+def _shadowed_names(node):
+    """Return (name, lineno) pairs for any builtin-shadowing bindings in node."""
+    if isinstance(node, ast.Assign):
+        return [(t.id, node.lineno) for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [(node.target.id, node.lineno)]
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        return [(node.target.id, node.lineno)]
+    if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+        return [(node.target.id, node.lineno)]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [(node.name, node.lineno)]
+    return []
+
+
 def shadowed_builtin_issues(tree, path, only_lines=None):
     """Flag assignments, for-loop targets, and function/class definitions whose
     name shadows a Python builtin -- silently breaks any code that expects the
     original binding after this point.
     """
     issues = []
-
-    def _flag(name, lineno):
-        if name in _SHADOWED_BUILTINS:
-            issues.append(Issue(
-                path, lineno, "style", "warn", "shadowed-builtin",
-                f"'{name}' shadows the built-in '{name}' -- rename to avoid masking it downstream"
-            ))
-
     for node in ast.walk(tree):
         if not _in_scope(node, only_lines):
             continue
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    _flag(target.id, node.lineno)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name):
-                _flag(node.target.id, node.lineno)
-        elif isinstance(node, ast.NamedExpr):
-            if isinstance(node.target, ast.Name):
-                _flag(node.target.id, node.lineno)
-        elif isinstance(node, ast.For):
-            if isinstance(node.target, ast.Name):
-                _flag(node.target.id, node.lineno)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            _flag(node.name, node.lineno)
-        elif isinstance(node, ast.ClassDef):
-            _flag(node.name, node.lineno)
+        for name, lineno in _shadowed_names(node):
+            if name in _SHADOWED_BUILTINS:
+                issues.append(Issue(
+                    path, lineno, "style", "warn", "shadowed-builtin",
+                    f"'{name}' shadows the built-in '{name}' -- rename to avoid masking it downstream"
+                ))
     return issues
+
+
+def _class_stmt_targets_and_value(stmt):
+    """Return (targets, value) for assignment statements inside a class body."""
+    if isinstance(stmt, ast.Assign):
+        return stmt.targets, stmt.value
+    if isinstance(stmt, ast.AnnAssign):
+        return [stmt.target], getattr(stmt, "value", None)
+    return None, None
 
 
 def mutable_class_attribute_issues(tree, path, only_lines=None):
@@ -118,15 +123,10 @@ def mutable_class_attribute_issues(tree, path, only_lines=None):
         for stmt in node.body:
             if not _in_scope(stmt, only_lines):
                 continue
-            if isinstance(stmt, ast.Assign):
-                value = stmt.value
-                targets = stmt.targets
-            elif isinstance(stmt, ast.AnnAssign):
-                value = getattr(stmt, "value", None)
-                targets = [stmt.target]
-            else:
+            targets, value = _class_stmt_targets_and_value(stmt)
+            if targets is None or value is None:
                 continue
-            if value is None or not isinstance(value, (ast.List, ast.Dict, ast.Set)):
+            if not isinstance(value, (ast.List, ast.Dict, ast.Set)):
                 continue
             kind = type(value).__name__.lower()
             for target in targets:
@@ -204,6 +204,28 @@ def redundant_else_issues(tree, path, only_lines=None):
 # Boolean-trap parameters
 # ---------------------------------------------------------------------------
 
+def _is_bool_param(arg, default):
+    """True if `arg` is typed or defaulted as bool."""
+    if isinstance(arg.annotation, ast.Name) and arg.annotation.id == "bool":
+        return True
+    return isinstance(default, ast.Constant) and isinstance(default.value, bool)
+
+
+def _bool_params(node):
+    """Return the positional param names that are clearly boolean for `node`."""
+    pos_args = list(node.args.posonlyargs) + list(node.args.args)
+    if pos_args and pos_args[0].arg in ("self", "cls"):
+        pos_args = pos_args[1:]
+    n_no_default = len(pos_args) - len(node.args.defaults)
+    result = []
+    for i, arg in enumerate(pos_args):
+        di = i - n_no_default
+        default = node.args.defaults[di] if 0 <= di < len(node.args.defaults) else None
+        if _is_bool_param(arg, default):
+            result.append(arg.arg)
+    return result
+
+
 def boolean_trap_issues(tree, path, only_lines=None):
     """Flag functions with 2+ positional parameters that are clearly boolean
     (bool annotation or bool default value).  At call sites these force
@@ -216,29 +238,14 @@ def boolean_trap_issues(tree, path, only_lines=None):
             continue
         if not _in_scope(node, only_lines):
             continue
-        pos_args = list(node.args.posonlyargs) + list(node.args.args)
-        if pos_args and pos_args[0].arg in ("self", "cls"):
-            pos_args = pos_args[1:]
-        n_no_default = len(pos_args) - len(node.args.defaults)
-        bool_params = []
-        for i, arg in enumerate(pos_args):
-            is_bool = (
-                isinstance(arg.annotation, ast.Name) and arg.annotation.id == "bool"
-            )
-            di = i - n_no_default
-            if 0 <= di < len(node.args.defaults):
-                dval = node.args.defaults[di]
-                if isinstance(dval, ast.Constant) and isinstance(dval.value, bool):
-                    is_bool = True
-            if is_bool:
-                bool_params.append(arg.arg)
-        if len(bool_params) >= 2:
-            shown = ", ".join(f"'{p}'" for p in bool_params[:3])
-            if len(bool_params) > 3:
+        bool_p = _bool_params(node)
+        if len(bool_p) >= 2:
+            shown = ", ".join(f"'{p}'" for p in bool_p[:3])
+            if len(bool_p) > 3:
                 shown += ", ..."
             issues.append(Issue(
                 path, node.lineno, "style", "info", "boolean-trap",
-                f"Function '{node.name}' has {len(bool_params)} positional bool parameters "
+                f"Function '{node.name}' has {len(bool_p)} positional bool parameters "
                 f"({shown}) -- make them keyword-only or use an options object"
             ))
     return issues

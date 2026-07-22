@@ -312,6 +312,35 @@ def _apply_scope_check(metrics_by_path, task_description):
         metrics_by_path[rel_path].issues.extend(issues)
 
 
+def _analyze_file_task(task):
+    """Top-level (picklable) worker for the process pool: unpacks one
+    analysis job and returns (rel_path, FileMetrics-or-None)."""
+    root, rel_path, lang, config, only_lines = task
+    return rel_path, analyze_file(root, rel_path, lang, config, only_lines)
+
+
+def _analyze_many(root, config, work_items, jobs):
+    """Run `analyze_file` over `work_items` -- a list of (rel_path, language,
+    only_lines) -- and return (rel_path, FileMetrics-or-None) pairs in input
+    order, so results are identical regardless of worker count.
+
+    `jobs`: 1 (or None) analyzes sequentially in-process; 0 uses one worker
+    per CPU; N>1 uses N workers. Parallel runs use a process pool because
+    the analyzers are CPU-bound `ast` work the GIL would serialize.
+    """
+    if jobs in (None, 1) or len(work_items) < 2:
+        return [
+            (rel_path, analyze_file(root, rel_path, lang, config, only_lines))
+            for rel_path, lang, only_lines in work_items
+        ]
+    from concurrent.futures import ProcessPoolExecutor
+
+    max_workers = jobs if jobs > 0 else os.cpu_count()
+    tasks = [(root, rel_path, lang, config, only_lines) for rel_path, lang, only_lines in work_items]
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(_analyze_file_task, tasks, chunksize=8))
+
+
 _MISSING_TEST_MIN_COMPLEXITY = 3
 
 
@@ -357,13 +386,15 @@ def _apply_missing_tests(metrics_by_path):
         ))
 
 
-def scan_repo(root, config):
-    """Full-repo scan: every supported file, in full."""
+def scan_repo(root, config, jobs=1):
+    """Full-repo scan: every supported file, in full. `jobs` parallelizes
+    the per-file analysis (see `_analyze_many`); results are deterministic
+    for any value."""
     files = discover_files(root, config.exclude, config.include_generic_languages)
     metrics = []
     metrics_by_path = {}
-    for rel_path, lang in files:
-        fm = analyze_file(root, rel_path, lang, config)
+    work_items = [(rel_path, lang, None) for rel_path, lang in files]
+    for rel_path, fm in _analyze_many(root, config, work_items, jobs):
         if fm is None:
             continue
         metrics.append(fm)
@@ -380,7 +411,7 @@ def scan_repo(root, config):
     return metrics
 
 
-def scan_changed(root, config, changed_files, base=None, task_description=None):
+def scan_changed(root, config, changed_files, base=None, task_description=None, jobs=1):
     """Diff-scoped scan.
 
     `changed_files`: dict[rel_path] -> set of 1-based added line numbers
@@ -399,11 +430,12 @@ def scan_changed(root, config, changed_files, base=None, task_description=None):
     all_files = dict(discover_files(root, config.exclude, config.include_generic_languages))
     metrics = []
     metrics_by_path = {}
-    for rel_path, added_lines in changed_files.items():
-        lang = all_files.get(rel_path)
-        if lang is None:
-            continue  # not a supported/tracked extension, or excluded
-        fm = analyze_file(root, rel_path, lang, config, only_lines=added_lines)
+    work_items = [
+        (rel_path, all_files[rel_path], added_lines)
+        for rel_path, added_lines in changed_files.items()
+        if rel_path in all_files  # skip unsupported/untracked extensions and excluded paths
+    ]
+    for rel_path, fm in _analyze_many(root, config, work_items, jobs):
         if fm is None:
             continue
         metrics.append(fm)

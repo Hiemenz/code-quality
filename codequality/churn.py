@@ -41,7 +41,7 @@ def _commit_metadata(cwd, marker, since=None):
         if not record:
             continue
         sha, date_str, body = record.split(_FS, 2)
-        commits[sha] = {"date": datetime.fromisoformat(date_str), "is_ai": marker.lower() in body.lower()}
+        commits[sha] = {"date": datetime.fromisoformat(date_str.replace("Z", "+00:00")), "is_ai": marker.lower() in body.lower()}
     return commits
 
 

@@ -57,3 +57,48 @@ class TestGeneratedFileExclusion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+MESSY_SOURCE = '''def messy(a, b, c, d, e, f):
+    if a:
+        if b:
+            if c:
+                if d:
+                    x = eval("1+1")
+                    return x
+    s = ""
+    for i in range(100):
+        s += str(i)
+    return s
+'''
+
+
+class TestParallelScanDeterminism(unittest.TestCase):
+    """scan_repo(jobs=N) must produce identical results for any N."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="cq-parallel-test-")
+        for i in range(6):
+            with open(os.path.join(self.root, f"mod_{i}.py"), "w") as f:
+                f.write(NORMAL_SOURCE if i % 2 else MESSY_SOURCE)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _snapshot(self, metrics):
+        return [
+            (fm.path, fm.loc, len(fm.functions), [i.to_dict() for i in fm.issues])
+            for fm in metrics
+        ]
+
+    def test_parallel_matches_sequential(self):
+        config = Config({})
+        sequential = self._snapshot(scan_repo(self.root, config, jobs=1))
+        parallel = self._snapshot(scan_repo(self.root, config, jobs=2))
+        self.assertEqual(sequential, parallel)
+
+    def test_jobs_zero_means_auto(self):
+        config = Config({})
+        sequential = self._snapshot(scan_repo(self.root, config, jobs=1))
+        auto = self._snapshot(scan_repo(self.root, config, jobs=0))
+        self.assertEqual(sequential, auto)

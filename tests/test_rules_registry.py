@@ -12,8 +12,10 @@ PACKAGE_DIR = Path(__file__).resolve().parent.parent / "codequality"
 # Issue() is constructed positionally: (file, line, category, severity,
 # symbol, message) -- so the symbol is the kebab-case string right after a
 # severity literal. Keyword construction uses symbol=/"symbol": directly.
+# Some analyzers define SYMBOL = "rule-name" constants and pass the variable.
 _SEVERITY_THEN_SYMBOL = re.compile(r'"(?:info|warn|error)",\s*"([a-z0-9-]+)"')
 _KEYWORD_SYMBOL = re.compile(r'(?:symbol=|"symbol": )"([a-z0-9-]+)"')
+_SYMBOL_CONST = re.compile(r'\b[A-Z_]*SYMBOL\s*=\s*"([a-z0-9-]+)"')
 
 # Symbols emitted through indirection (dicts/variables) that the regexes
 # above can't see; each is asserted present in its module below.
@@ -40,6 +42,7 @@ def _emitted_symbols():
         text = path.read_text(encoding="utf-8")
         symbols.update(_SEVERITY_THEN_SYMBOL.findall(text))
         symbols.update(_KEYWORD_SYMBOL.findall(text))
+        symbols.update(_SYMBOL_CONST.findall(text))
     return (symbols - _NOT_RULES) | _INDIRECT
 
 

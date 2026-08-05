@@ -1,0 +1,94 @@
+name: "codequality"
+description: >-
+  Deterministic code quality score for a repo or PR diff. Runs
+  `codequality scan` on pushes and additionally gates `codequality diff`
+  against the PR base on pull requests, posting a sticky score comment.
+author: "Hiemenz"
+
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  fail-under:
+    description: "Fail the diff gate if the changed-code score is below this."
+    required: false
+    default: "70"
+  scan-fail-under:
+    description: >-
+      Fail the full-repo scan below this score. Empty means the scan is
+      informational only (recommended for repos with legacy debt).
+    required: false
+    default: ""
+  pr-comment:
+    description: "Post/update a sticky PR comment with the diff report."
+    required: false
+    default: "true"
+  extras:
+    description: >-
+      Optional pip extras to install, e.g. "treesitter" or
+      "treesitter,types". Empty installs the core package only.
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install codequality
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.extras }}" ]; then
+          pip install "${{ github.action_path }}[${{ inputs.extras }}]"
+        else
+          pip install "${{ github.action_path }}"
+        fi
+
+    - name: Full repo scan
+      shell: bash
+      run: |
+        codequality scan . --format json --output codequality-full.json
+        if [ -n "${{ inputs.scan-fail-under }}" ]; then
+          codequality scan . --format text --fail-under "${{ inputs.scan-fail-under }}"
+        else
+          codequality scan . --format text
+        fi
+
+    - name: Changed-code gate
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        codequality diff . --base "origin/${{ github.base_ref }}" \
+          --format markdown --output codequality-diff.md \
+          --fail-under "${{ inputs.fail-under }}"
+
+    - name: Sticky PR comment
+      if: github.event_name == 'pull_request' && always() && inputs.pr-comment == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          if (!fs.existsSync('codequality-diff.md')) return;
+          const marker = '<!-- codequality-report -->';
+          const body = marker + '\n' + fs.readFileSync('codequality-diff.md', 'utf8');
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            per_page: 100,
+          });
+          const existing = comments.find(c => c.body && c.body.startsWith(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+          }

@@ -86,7 +86,7 @@ def _commit_date(cwd, sha, cache):
         except GitError:
             cache[sha] = None
         else:
-            cache[sha] = datetime.fromisoformat(raw.strip())
+            cache[sha] = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
     return cache[sha]
 
 

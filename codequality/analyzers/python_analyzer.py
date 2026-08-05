@@ -16,7 +16,10 @@ from codequality.analyzers.async_await import unawaited_coroutine_issues
 from codequality.analyzers.base import FileMetrics, FunctionMetrics, Issue, is_public_name
 from codequality.analyzers.db_query_in_loop import query_in_loop_issues
 from codequality.analyzers.deprecated_api import deprecated_api_issues
+from codequality.analyzers.naive_datetime import naive_datetime_issues
 from codequality.analyzers.placeholder_code import placeholder_comment_issues, stub_implementation_issues
+from codequality.analyzers.redos import redos_issues
+from codequality.analyzers.python_correctness_extra import float_equality_issues, mutable_global_issues
 from codequality.analyzers.python_docstring_drift import docstring_drift_issues
 from codequality.analyzers.python_idioms import (
     boolean_trap_issues,
@@ -829,6 +832,7 @@ def _module_level_issues(tree, path, limits, only_lines, check_imports):
     issues = (
         _unused_import_issues(tree, path, only_lines)
         + security_issues(tree, path, only_lines)
+        + redos_issues(tree, path, only_lines)
         + assert_validation_issues(tree, path, only_lines)
         + unreachable_code_issues(tree, path, only_lines)
         + resource_lifecycle_issues(tree, path, only_lines)
@@ -837,6 +841,9 @@ def _module_level_issues(tree, path, limits, only_lines, check_imports):
         + _print_call_issues(tree, path, only_lines)
         + stub_implementation_issues(tree, path, only_lines)
         + deprecated_api_issues(tree, path, only_lines)
+        + naive_datetime_issues(tree, path, only_lines)
+        + float_equality_issues(tree, path, only_lines)
+        + mutable_global_issues(tree, path, only_lines)
         + comparison_idiom_issues(tree, path, only_lines)
         + shadowed_builtin_issues(tree, path, only_lines)
         + mutable_class_attribute_issues(tree, path, only_lines)

@@ -1,0 +1,32 @@
+# Hooks for https://pre-commit.com
+#
+# Usage in a consuming repo's .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/Hiemenz/code-quality
+#       rev: v0.5.0
+#       hooks:
+#         - id: codequality-diff
+#
+# `codequality diff` with no --base auto-detects: with uncommitted changes
+# present it scores the working tree against HEAD, which is exactly the
+# pre-commit situation. Override args to tune the gate, e.g.
+# args: [diff, ., --fail-under, "80"].
+
+- id: codequality-diff
+  name: codequality (changed code)
+  description: Score only the code being committed; fail below the threshold.
+  entry: codequality
+  args: [diff, ., --fail-under, "70"]
+  language: python
+  pass_filenames: false
+  always_run: true
+
+- id: codequality-scan
+  name: codequality (whole repo)
+  description: Score the entire repository; fail below the threshold.
+  entry: codequality
+  args: [scan, ., --fail-under, "70"]
+  language: python
+  pass_filenames: false
+  always_run: true

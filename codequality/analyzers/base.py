@@ -13,12 +13,18 @@ class Issue:
     message: str
 
     def to_dict(self):
-        """JSON-serializable form of this issue."""
+        """JSON-serializable form of this issue.
+
+        `rule` and `symbol` are the same value: `rule` is the
+        conventional field name for integrations, `symbol` predates it
+        and stays for backward compatibility.
+        """
         return {
             "file": self.file,
             "line": self.line,
             "category": self.category,
             "severity": self.severity,
+            "rule": self.symbol,
             "symbol": self.symbol,
             "message": self.message,
         }

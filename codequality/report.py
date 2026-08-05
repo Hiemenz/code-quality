@@ -74,24 +74,40 @@ def _complex_functions(file_metrics_list, limit=10):
     ]
 
 
+def _totals(file_metrics_list, issues):
+    """Whole-scan counters for the report's `summary` block."""
+    total_loc = sum(fm.loc for fm in file_metrics_list)
+    test_loc = sum(fm.loc for fm in file_metrics_list if is_test_file(fm.path))
+    source_loc = total_loc - test_loc
+    return {
+        "files_analyzed": len(file_metrics_list),
+        "loc": total_loc,
+        "functions": sum(len(fm.functions) for fm in file_metrics_list),
+        "issues": len(issues),
+        "suppressed": sum(fm.suppressed_count for fm in file_metrics_list),
+        "test_loc": test_loc,
+        "source_loc": source_loc,
+        "test_ratio": (test_loc / source_loc) if source_loc else None,
+    }
+
+
+def _threshold(issues, score_result, fail_under, fail_on):
+    """Evaluate --fail-under/--fail-on for the report's `threshold` block."""
+    score_passed = score_result.overall >= fail_under if fail_under is not None else True
+    fail_on_categories = [c.strip() for cs in (fail_on or []) for c in cs.split(",") if c.strip()]
+    flagged = {issue.category for issue in issues}
+    fail_on_triggered = [cat for cat in fail_on_categories if cat in flagged]
+    return {
+        "fail_under": fail_under,
+        "fail_on": fail_on_categories or None,
+        "fail_on_triggered": fail_on_triggered or None,
+        "passed": score_passed and not fail_on_triggered,
+    }
+
+
 def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, fail_under=None, fail_on=None, use_color=True):
     """Assemble the format-agnostic report dict consumed by render_json/text/markdown."""
     issues = _all_issues(file_metrics_list)
-    total_functions = sum(len(fm.functions) for fm in file_metrics_list)
-    total_loc = sum(fm.loc for fm in file_metrics_list)
-    total_suppressed = sum(fm.suppressed_count for fm in file_metrics_list)
-    test_loc = sum(fm.loc for fm in file_metrics_list if is_test_file(fm.path))
-    source_loc = total_loc - test_loc
-    test_ratio = (test_loc / source_loc) if source_loc else None
-    score_passed = score_result.overall >= fail_under if fail_under is not None else True
-    fail_on_categories = [c.strip() for cs in (fail_on or []) for c in cs.split(",") if c.strip()]
-    category_issues = {cat: [] for cat in fail_on_categories}
-    for issue in issues:
-        if issue.category in category_issues:
-            category_issues[issue.category].append(issue.to_dict())
-    fail_on_triggered = [cat for cat in fail_on_categories if category_issues.get(cat)]
-    passed = score_passed and not fail_on_triggered
-
     return {
         "tool": "codequality",
         "version": _version(),
@@ -102,26 +118,12 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
         "categories": {
             name: {"score": cat.score, "weight": cat.weight} for name, cat in score_result.categories.items()
         },
-        "summary": {
-            "files_analyzed": len(file_metrics_list),
-            "loc": total_loc,
-            "functions": total_functions,
-            "issues": len(issues),
-            "suppressed": total_suppressed,
-            "test_loc": test_loc,
-            "source_loc": source_loc,
-            "test_ratio": test_ratio,
-        },
+        "summary": _totals(file_metrics_list, issues),
         "worst_files": [{"path": p, "score": s, "lines": n} for p, s, n in _worst_files(file_metrics_list)],
         "complex_functions": _complex_functions(file_metrics_list),
         "issues": [i.to_dict() for i in issues],
         "diff": diff_info,
-        "threshold": {
-            "fail_under": fail_under,
-            "fail_on": fail_on_categories or None,
-            "fail_on_triggered": fail_on_triggered or None,
-            "passed": passed,
-        },
+        "threshold": _threshold(issues, score_result, fail_under, fail_on),
     }
 
 
@@ -133,6 +135,41 @@ def _version():
 
 def render_json(summary):
     return json.dumps(summary, indent=2, sort_keys=False)
+
+
+def _badge_color(score):
+    """Map a 0-100 score to a shields.io named color."""
+    if score >= 90:
+        return "brightgreen"
+    if score >= 80:
+        return "green"
+    if score >= 70:
+        return "yellowgreen"
+    if score >= 60:
+        return "yellow"
+    if score >= 50:
+        return "orange"
+    return "red"
+
+
+def render_badge(summary):
+    """Render `summary` as shields.io endpoint JSON.
+
+    Serve the output over HTTPS (e.g. as a gist or pages artifact) and
+    point https://img.shields.io/endpoint?url=... at it to get a live
+    score badge in a README.
+    """
+    score = summary["overall"]["score"]
+    grade = summary["overall"]["grade"]
+    return json.dumps(
+        {
+            "schemaVersion": 1,
+            "label": "code quality",
+            "message": f"{score:.1f} ({grade})",
+            "color": _badge_color(score),
+        },
+        indent=2,
+    )
 
 
 def render_text(summary, use_color=True, max_issues=25):
@@ -258,6 +295,42 @@ def render_sarif(summary):
         ],
     }
     return json.dumps(sarif, indent=2, sort_keys=False)
+
+
+# codequality severity -> GitLab Code Quality severity vocabulary.
+# GitLab accepts info/minor/major/critical/blocker; map error->critical so
+# it stands out in the MR widget, warn->major, info->minor.
+_GITLAB_SEVERITY = {"error": "critical", "warn": "major", "info": "minor"}
+
+
+def _gitlab_fingerprint(issue):
+    """Stable content hash so GitLab can track an issue across pushes."""
+    import hashlib
+
+    key = f"{issue['file']}:{issue['line']}:{issue['symbol']}:{issue['message']}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def render_gitlab(summary):
+    """Render `summary` as a GitLab Code Quality report.
+
+    This is GitLab's own JSON schema (a subset of the Code Climate format);
+    point a CI job's `artifacts:reports:codequality` at the output and the
+    findings render inline in merge-request diffs, the GitLab counterpart to
+    SARIF for GitHub. See
+    https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format
+    """
+    report = [
+        {
+            "description": i["message"],
+            "check_name": i["symbol"],
+            "fingerprint": _gitlab_fingerprint(i),
+            "severity": _GITLAB_SEVERITY.get(i["severity"], "minor"),
+            "location": {"path": i["file"], "lines": {"begin": max(1, i["line"])}},
+        }
+        for i in summary["issues"]
+    ]
+    return json.dumps(report, indent=2)
 
 
 def render_markdown(summary):

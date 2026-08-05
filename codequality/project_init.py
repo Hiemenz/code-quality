@@ -18,19 +18,18 @@ _CONFIG_TEMPLATE = """\
 # codequality configuration
 # Documentation: https://github.com/Hiemenz/code-quality
 
-[tool.codequality]
+# Glob patterns to exclude from scanning (relative to this file's directory).
+# Useful for generated code, fixtures, or vendored libraries.
+# exclude = ["generated/**", "tests/fixtures/**"]
 
+[thresholds]
 # Exit non-zero from `codequality scan` when the overall score drops below
 # this value (0–100). Start conservative and raise it once the codebase is
 # in better shape.
 fail_under = {fail_under}
 
-# Glob patterns to exclude from scanning (relative to this file's directory).
-# Useful for generated code, fixtures, or vendored libraries.
-# exclude = ["generated/**", "tests/fixtures/**"]
-
 # Optional: adjust category weights (these are the built-in defaults).
-# [tool.codequality.weights]
+# [weights]
 # style       = 12
 # correctness = 15
 # security    = 15

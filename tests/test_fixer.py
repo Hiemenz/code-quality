@@ -111,11 +111,18 @@ class TestFixFstringNoPlaceholder(unittest.TestCase):
         ok, result = self._apply('x = "hello"\n', 1)
         self.assertFalse(ok)
 
-    def test_only_first_occurrence_fixed(self):
+    def test_fixes_only_placeholder_free_f_strings_on_line(self):
+        # f"{a}" has a placeholder and must be kept; f"static" has none and must be stripped
+        ok, result = self._apply('print(f"{a}" + f"static")\n', 1)
+        self.assertTrue(ok)
+        self.assertIn('f"{a}"', result)
+        self.assertNotIn('f"static"', result)
+        self.assertIn('"static"', result)
+
+    def test_all_placeholder_free_f_strings_fixed(self):
         ok, result = self._apply('x = f"a"; y = f"b"\n', 1)
         self.assertTrue(ok)
-        # First f-string should be fixed, second unchanged
-        self.assertIn('f"b"', result)
+        self.assertNotIn("f\"", result)
 
 
 # ---------------------------------------------------------------------------

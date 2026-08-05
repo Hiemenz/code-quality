@@ -37,6 +37,7 @@ SYMBOL = "naive-datetime"
 _NO_TZ_PARAM = frozenset({"today", "utcnow"})           # never take a tz
 _TZ_FIRST_POSITIONAL = {"now": 0}                       # now(tz) -- tz is arg 0
 _TZ_KEYWORD = frozenset({"fromtimestamp", "utcfromtimestamp"})  # accept tz=...
+_TZ_SECOND_POSITIONAL = frozenset({"fromtimestamp"})    # fromtimestamp(ts, tz)
 
 _ALL = _NO_TZ_PARAM | set(_TZ_FIRST_POSITIONAL) | _TZ_KEYWORD
 
@@ -65,6 +66,8 @@ def _has_timezone_arg(call, attr):
         if len(call.args) > idx and not _is_none(call.args[idx]):
             return True
     if attr in _TZ_KEYWORD:
+        if attr in _TZ_SECOND_POSITIONAL and len(call.args) > 1 and not _is_none(call.args[1]):
+            return True
         for kw in call.keywords:
             if kw.arg == "tz" and not _is_none(kw.value):
                 return True

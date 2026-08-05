@@ -192,7 +192,7 @@ def redundant_else_issues(tree, path, only_lines=None):
         if isinstance(node.orelse[0], ast.If):
             continue
         if _last_stmt_always_exits(node.body):
-            else_lineno = node.orelse[0].lineno
+            else_lineno = node.orelse[0].lineno - 1  # orelse[0] is the first body stmt; else: is the line before
             issues.append(Issue(
                 path, else_lineno, "style", "info", "redundant-else",
                 "else block is redundant -- the preceding if branch always returns/raises/continues/breaks"

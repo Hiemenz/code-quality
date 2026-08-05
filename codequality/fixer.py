@@ -101,8 +101,27 @@ def _fix_fstring_no_placeholder(lines, lineno):
     if idx >= len(lines) or lines[idx] is None:
         return False
     line = lines[idx]
-    # Remove the first f/F from the prefix (keep any r/b/u chars).
-    new_line = _FSTR_RE.sub(lambda m: m.group(1) + m.group(3), line, count=1)
+
+    def _remove_if_no_placeholder(m):
+        pos = m.end()
+        if pos >= len(line):
+            return m.group(0)
+        q = line[pos]
+        if q not in ('"', "'"):
+            return m.group(0)
+        triple = line[pos:pos + 3] in ('"""', "'''")
+        cq = line[pos:pos + 3] if triple else q
+        cs = pos + (3 if triple else 1)
+        ce = line.find(cq, cs)
+        if ce == -1:
+            return m.group(0)  # multiline string — skip conservatively
+        content = line[cs:ce]
+        # Strip escaped braces {{ / }} then check for a real { placeholder.
+        if "{" in content.replace("{{", "").replace("}}", ""):
+            return m.group(0)
+        return m.group(1) + m.group(3)
+
+    new_line = _FSTR_RE.sub(_remove_if_no_placeholder, line)
     if new_line == line:
         return False
     lines[idx] = new_line
@@ -222,7 +241,7 @@ def _fix_file(abs_path, root, issues, dry_run=False):
     rel = str(Path(abs_path).relative_to(root))
     result = FixResult(path=rel)
     try:
-        with open(abs_path, encoding="utf-8") as fh:
+        with open(abs_path, encoding="utf-8", newline="") as fh:
             original = fh.read()
     except (OSError, UnicodeDecodeError) as exc:
         result.error = str(exc)
@@ -281,7 +300,7 @@ def _fix_file(abs_path, root, issues, dry_run=False):
     result.new_text = new_text
 
     if not dry_run and result.changed:
-        with open(abs_path, "w", encoding="utf-8") as fh:
+        with open(abs_path, "w", encoding="utf-8", newline="") as fh:
             fh.write(new_text)
 
     return result

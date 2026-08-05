@@ -136,6 +136,9 @@ echo $?
 # GitHub code-scanning annotations
 codequality scan . --format sarif --output results.sarif
 
+# GitLab Code Quality report (for MR diff annotations)
+codequality scan . --format gitlab --output gl-code-quality.json
+
 # Track the score over time, then look at the trend
 codequality scan . --record-history history.jsonl
 codequality trend history.jsonl
@@ -261,6 +264,21 @@ codequality ai-report . --check-imports --check-types
 # style, string formatting) and list files that deviate -- the repo itself
 # is the baseline, report-only (see "Repo conventions" below)
 codequality conventions .
+
+# Auto-fix the five deterministic style rules in-place (or preview with --dry-run)
+codequality fix . --dry-run
+
+# Scaffold a .codequality.toml and GitHub Actions CI workflow into the repo
+codequality init . --fail-under 70
+
+# Compare two scan --format json reports and exit non-zero on regression
+codequality compare before.json after.json --tolerance 1.0
+
+# Type-annotation coverage: % of public function params/returns annotated
+codequality annotation-coverage . --min-coverage 80
+
+# Age blanket # noqa / # type: ignore / codequality: ignore via git blame
+codequality suppression-debt . --stale-days 90
 ```
 
 `scan` and `diff` share the same flags:
@@ -268,7 +286,7 @@ codequality conventions .
 | Flag | Meaning |
 |---|---|
 | `path` | Root directory to analyze (default `.`) |
-| `--format` | `text` (default, colored), `json`, `markdown`, or `sarif` |
+| `--format` | `text` (default, colored), `json`, `markdown`, `sarif`, `html`, `badge`, or `gitlab` |
 | `--output FILE` | Write the report to a file instead of stdout |
 | `--fail-under N` | Exit 1 if the overall score is below N |
 | `--config PATH` | Explicit config file (see below) |
@@ -288,7 +306,8 @@ see above).
 overall/category scores as one JSON line to `FILE` — see
 [Tracking score history](#tracking-score-history).
 
-Twenty-four more subcommands, each documented in its own section below:
+Thirty-seven more subcommands beyond `scan` and `diff`, each documented in
+its own section below:
 `codequality conventions` (the repo's own conventions as the baseline —
 see [Repo conventions](#repo-conventions-the-scanned-repo-is-the-baseline)),
 `codequality baseline`, `codequality trend FILE`, `codequality churn`,
@@ -312,7 +331,7 @@ change frequency — see
 [Hotspots](#hotspots-complexity-x-change-frequency)),
 `codequality complexity-coverage-risk` (complexity crossed with structural
 test presence — see
-[Complexity x test presence risk](#complexity-x-test-presence-risk)), and
+[Complexity x test presence risk](#complexity-x-test-presence-risk)),
 `codequality api-diff` (public API comparison between any two git refs —
 see
 [`codequality api-diff`](#codequality-api-diff-public-api-comparison-across-any-two-refs)),
@@ -323,6 +342,19 @@ Plus `codequality mutation` and `codequality flakiness`, which are
 deliberately separate from everything else — see
 [Mutation testing](#mutation-testing) and
 [Flaky test detection](#flaky-test-detection-executes-your-tests-n-times).
+
+Five subcommands added in recent versions:
+`codequality fix` (auto-fix trailing-whitespace, f-string-no-placeholder,
+comparison-to-none/true, and redundant-else in-place — supports `--dry-run`),
+`codequality init` (scaffold `.codequality.toml` and a GitHub Actions CI
+workflow with a single command),
+`codequality compare` (delta between two `scan --format json` reports;
+exits non-zero on regression beyond `--tolerance`),
+`codequality annotation-coverage` (structural type-annotation coverage for
+public Python functions — no type-checker invoked),
+and `codequality suppression-debt` (age blanket `# noqa` / `# type:
+ignore` / `codequality: ignore` comments via git blame; see also
+`codequality explain <symbol>` for looking up any rule by name).
 
 Exit codes: `0` = passed threshold, `1` = below threshold, `2` = usage/git error.
 
@@ -818,6 +850,10 @@ the lines that changed ("patch coverage"), not the whole file.
 
 ## Further reading
 
+The internal design — module map, data flow, analyzer layer, scoring model,
+how to add a new check — is documented in
+[docs/architecture.md](docs/architecture.md).
+
 Per-subcommand documentation lives in [docs/subcommands.md](docs/subcommands.md):
 `api-diff`, `complexity-regression`, `history-secrets`, `conventions`,
 `mutation`, `flakiness`, `churn`, `edit-distance`, `commit-lint`,
@@ -910,6 +946,7 @@ max_complexity = 10
 max_nesting = 4
 docstring_min_lines = 8   # don't demand docstrings on tiny helpers
 
+# Top-level keys (not under [limits])
 exclude = ["migrations/*", "vendor/*"]
 include_generic_languages = true
 

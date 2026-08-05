@@ -37,6 +37,9 @@ class TestNaiveDatetime(unittest.TestCase):
     def test_fromtimestamp_with_tz_not_flagged(self):
         self.assertEqual(_issues("datetime.fromtimestamp(x, tz=timezone.utc)\n"), [])
 
+    def test_fromtimestamp_with_positional_tz_not_flagged(self):
+        self.assertEqual(_issues("datetime.fromtimestamp(x, timezone.utc)\n"), [])
+
     def test_utcfromtimestamp_flagged(self):
         self.assertEqual(len(_issues("datetime.utcfromtimestamp(x)\n")), 1)
 

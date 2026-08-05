@@ -35,6 +35,19 @@ class TestInit(unittest.TestCase):
         self.assertIn("80", content)
         self.assertIn("fail_under", content)
 
+    def test_config_is_honored_by_config_loader(self):
+        init(self._td, fail_under=85)
+        from codequality.config import Config
+        cfg = Config.load(self._td)
+        self.assertEqual(cfg.fail_under, 85.0)
+
+    def test_config_does_not_use_tool_namespace(self):
+        init(self._td)
+        config_path = os.path.join(self._td, ".codequality.toml")
+        with open(config_path) as f:
+            content = f.read()
+        self.assertNotIn("[tool.codequality]", content)
+
     def test_workflow_contains_fail_under(self):
         init(self._td, fail_under=75)
         wf = os.path.join(self._td, ".github", "workflows", "codequality.yml")

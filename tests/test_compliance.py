@@ -50,14 +50,30 @@ class TestBuildReport(unittest.TestCase):
         report = compliance.build_report([_issue("unsafe-yaml-load"), _issue("unsafe-deserialization")])
         self.assertEqual(len(report["cwe"]["CWE-502"]), 2)
 
+    def test_non_security_category_rule_with_cwe_is_still_included(self):
+        report = compliance.build_report([_issue("unclosed-resource", category="correctness")])
+        self.assertEqual(report["total"], 1)
+        self.assertIn("CWE-404", report["cwe"])
+
+    def test_non_security_category_rule_without_mapping_is_excluded(self):
+        report = compliance.build_report([_issue("bare-except", category="correctness")])
+        self.assertEqual(report["total"], 0)
+        self.assertEqual(report["unmapped"], [])
+
+    def test_shell_exec_is_registered_and_mapped(self):
+        report = compliance.build_report([_issue("shell-exec")])
+        self.assertEqual(report["total"], 1)
+        self.assertIn("CWE-78", report["cwe"])
+        self.assertIn("A03:2021", report["owasp"])
+
 
 class TestRenderText(unittest.TestCase):
     def test_no_findings_message(self):
-        self.assertEqual(compliance.render_text(compliance.build_report([])), "No security findings.")
+        self.assertEqual(compliance.render_text(compliance.build_report([])), "No security-relevant findings.")
 
     def test_render_includes_counts(self):
         text = compliance.render_text(compliance.build_report([_issue("sql-injection-risk")]))
-        self.assertIn("1 security finding", text)
+        self.assertIn("1 security-relevant finding", text)
         self.assertIn("CWE-89", text)
         self.assertIn("A03:2021", text)
 

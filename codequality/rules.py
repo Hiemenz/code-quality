@@ -175,7 +175,10 @@ RULES = {
     # `cwe`/`owasp` are optional: present on rules with a well-established
     # mapping (used by `codequality compliance` to group findings for an
     # audit-style report), absent where a mapping would be tenuous or the
-    # rule isn't a CWE/OWASP-shaped concern in the first place.
+    # rule isn't a CWE/OWASP-shaped concern in the first place. A few
+    # non-`security`-category rules carry a `cwe` too (see `unclosed-resource`,
+    # `deprecated-api` below) -- `compliance` picks those up as well, not
+    # just `category == "security"`.
     "hardcoded-secret": {
         "category": "security", "scope": "scan", "cwe": "CWE-798", "owasp": "A07:2021",
         "description": "String that looks like a credential/API key/token committed in source. Move it to env/secret storage (see also `codequality history-secrets`).",
@@ -187,6 +190,10 @@ RULES = {
     "shell-true": {
         "category": "security", "scope": "scan", "cwe": "CWE-78", "owasp": "A03:2021",
         "description": "subprocess with shell=True; prefer an argument list to avoid shell injection.",
+    },
+    "shell-exec": {
+        "category": "security", "scope": "scan", "cwe": "CWE-78", "owasp": "A03:2021",
+        "description": "os.system() runs a shell command; prefer subprocess with a list of args.",
     },
     "sql-injection-risk": {
         "category": "security", "scope": "scan", "cwe": "CWE-89", "owasp": "A03:2021",
@@ -278,7 +285,7 @@ RULES = {
         "description": "Public class method is never referenced as an attribute access anywhere in the repo (AST scan).",
     },
     "unclosed-resource": {
-        "category": "correctness", "scope": "scan",
+        "category": "correctness", "scope": "scan", "cwe": "CWE-404",
         "description": "open()/connect() result is never closed on all paths. Use a with-statement.",
     },
     "unawaited-coroutine": {
@@ -294,7 +301,7 @@ RULES = {
         "description": "Database/HTTP call inside a loop (N+1 pattern). Batch the query outside the loop.",
     },
     "deprecated-api": {
-        "category": "correctness", "scope": "scan",
+        "category": "correctness", "scope": "scan", "cwe": "CWE-477",
         "description": "Call to a stdlib API that is deprecated or removed in current Python versions.",
     },
     "unresolved-import": {

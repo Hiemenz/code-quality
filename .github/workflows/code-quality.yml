@@ -23,7 +23,7 @@ jobs:
 
       - name: Install codequality + test deps
         run: |
-          pip install .
+          pip install ".[treesitter]"
           pip install pytest
 
       - name: Run test suite

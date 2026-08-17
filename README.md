@@ -709,6 +709,17 @@ granularity rather than per-function. Treat those scores as directional.
 The extra is optional (not a base dependency) specifically so the default
 install stays dependency-free and installable anywhere `pip` runs.
 
+**JavaScript/TypeScript additionally get real security detection** (with
+the `treesitter` extra installed): hardcoded weak hashes
+(`crypto.createHash('md5'|'sha1')`), shell/command injection
+(`child_process.exec`/`execSync`, or `spawn`/`execFile` with
+`{shell: true}`), `new Function(...)` as `dangerous-eval`, SQL-injection-
+shaped query building, and taint tracking into SQL sinks from
+`req.query`/`req.params`/`req.body`/`req.headers`/`req.cookies`/
+`process.env`/`process.argv` — the same rule symbols and CWE/OWASP tags
+the Python checks use, so `codequality compliance` treats JS/TS findings
+identically. No other tree-sitter language gets this yet.
+
 ### Diff mode is scoped to the actual change, not just the changed files
 
 `codequality diff` doesn't just re-run the full-file analysis on whatever

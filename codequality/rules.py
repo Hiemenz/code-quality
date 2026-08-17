@@ -189,7 +189,9 @@ RULES = {
     },
     "shell-true": {
         "category": "security", "scope": "scan", "cwe": "CWE-78", "owasp": "A03:2021",
-        "description": "subprocess with shell=True; prefer an argument list to avoid shell injection.",
+        "description": "Command run through a shell (Python subprocess with shell=True; Node's "
+                        "child_process.exec/execSync, or spawn/execFile with {shell: true}); "
+                        "prefer an argument list to avoid shell injection.",
     },
     "shell-exec": {
         "category": "security", "scope": "scan", "cwe": "CWE-78", "owasp": "A03:2021",

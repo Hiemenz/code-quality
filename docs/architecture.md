@@ -166,6 +166,23 @@ Python path. It supports `.js .jsx .ts .tsx .java .go .c .cpp .cs .rb .php
 (`AVAILABLE` flag); `scanner.py` falls back to the generic analyzer when
 the extra is not installed or the language isn't supported.
 
+For JavaScript/TypeScript specifically, `analyze()` also runs
+`codequality/analyzers/js_security.py` (weak-hash, shell-true,
+sql-injection-risk, and `new Function(...)` as dangerous-eval -- deliberately
+*not* bare `eval`/`exec` or hardcoded-secret, both already covered by the
+generic line-level regex path below for every tree-sitter language) and
+`codequality/analyzers/js_taint_flow.py` (intraprocedural-only taint
+tracking into SQL sinks, sources being `req.query`/`req.params`/`req.body`/
+`req.headers`/`req.cookies`/`process.env`/`process.argv` member access --
+ported from `codequality/analyzers/taint_flow.py`'s Python design onto
+tree-sitter nodes; see that module's docstring for the "why SQL only, why
+intraprocedural" rationale, which carries over unchanged). Both reuse the
+same rule symbols (`weak-hash`, `shell-true`, `sql-injection-risk`,
+`dangerous-eval`, `tainted-data-flow`) the Python checks emit, so
+`codequality compliance` and scoring treat JS/TS findings identically with
+no registry changes. No other tree-sitter language (Go, Java, Rust, ...)
+gets this treatment yet.
+
 ### Generic heuristic fallback
 
 `generic_analyzer.py` requires no parser. It measures:

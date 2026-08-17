@@ -8,8 +8,8 @@ import os
 
 from codequality import coverage_check, generated_code, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, internal_refs,
-    python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
+    circular_imports, complexity_regression, dead_code, dead_code_ast, doc_examples, duplication, generic_analyzer,
+    internal_refs, python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
 )
 from codequality.analyzers.base import FileMetrics, Issue
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
@@ -84,7 +84,7 @@ def analyze_file(root, rel_path, language, config, only_lines=None):
     return fm
 
 
-def _apply_duplication(root, file_metrics_by_path):
+def _apply_duplication(root, file_metrics_by_path, config=None):
     file_lines = {}
     for rel_path, fm in file_metrics_by_path.items():
         source = _read_source(root, rel_path)
@@ -95,6 +95,34 @@ def _apply_duplication(root, file_metrics_by_path):
         fm = file_metrics_by_path.get(rel_path)
         if fm is not None:
             fm.duplicate_lines = len(idx_set)
+
+    dup_config = getattr(config, "duplication_index", None)
+    if dup_config and dup_config.get("cross_project"):
+        _apply_cross_project_duplication(root, file_metrics_by_path, file_lines, dup_config)
+
+
+def _apply_cross_project_duplication(root, file_metrics_by_path, file_lines, dup_config):
+    """Opt-in (config.duplication_index.cross_project): checks this scan's
+    blocks against a persisted, on-disk index that may include other
+    projects' blocks too, and flags any cross-project match as a
+    `cross-project-duplicate` issue -- signal `_apply_duplication`'s
+    same-scan-only count can never surface on its own. See
+    codequality/analyzers/duplication.py.
+    """
+    project_id = dup_config.get("project_id") or root
+    index_path = dup_config.get("index_path") or duplication.default_index_path()
+    persisted_index = duplication.load_index(index_path)
+    matches, updated_index = duplication.find_cross_project_duplicates(file_lines, persisted_index, project_id)
+    for rel_path, hits in matches.items():
+        fm = file_metrics_by_path.get(rel_path)
+        if fm is None:
+            continue
+        for line_start, other_project, other_path in hits:
+            fm.issues.append(Issue(
+                rel_path, line_start + 1, "duplication", "info", "cross-project-duplicate",
+                f"Also appears in '{other_project}' at {other_path} -- possible copy/paste across projects"
+            ))
+    duplication.save_index(index_path, updated_index)
 
 
 def _python_file_sources(root, metrics_by_path):
@@ -125,13 +153,18 @@ def _apply_circular_imports(root, metrics_by_path):
 
 def _apply_dead_code(root, metrics_by_path):
     """Cross-file dead-code detection: needs every Python file's source at
-    once to know whether a top-level function/class is referenced
+    once to know whether a top-level function/class or method is referenced
     *anywhere* in the repo, so -- like duplication -- this only makes
     sense on a full scan, never a diff (a diff has no view of the rest of
     the repo to check references against).
+
+    Uses the AST-based scanner (dead_code_ast) which collects actual code
+    references from AST nodes rather than raw text, and also detects unused
+    public class methods.  The regex-based dead_code module is kept for the
+    dead-code-confidence subcommand which needs its git-blame integration.
     """
     file_sources = _python_file_sources(root, metrics_by_path)
-    for rel_path, issues in dead_code.find_dead_code(file_sources).items():
+    for rel_path, issues in dead_code_ast.find_dead_code_ast(file_sources).items():
         fm = metrics_by_path.get(rel_path)
         if fm is not None:
             fm.issues.extend(issues)
@@ -399,7 +432,7 @@ def scan_repo(root, config, jobs=1):
             continue
         metrics.append(fm)
         metrics_by_path[rel_path] = fm
-    _apply_duplication(root, metrics_by_path)
+    _apply_duplication(root, metrics_by_path, config)
     _apply_circular_imports(root, metrics_by_path)
     _apply_dead_code(root, metrics_by_path)
     _apply_internal_refs(root, metrics_by_path)
@@ -440,7 +473,7 @@ def scan_changed(root, config, changed_files, base=None, task_description=None, 
             continue
         metrics.append(fm)
         metrics_by_path[rel_path] = fm
-    _apply_duplication(root, metrics_by_path)
+    _apply_duplication(root, metrics_by_path, config)
     _apply_circular_imports(root, metrics_by_path)
     _apply_type_checking(root, config, metrics_by_path, changed_files=changed_files)
     _apply_coverage(root, config, metrics_by_path, changed_files=changed_files)

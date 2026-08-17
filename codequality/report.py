@@ -31,6 +31,14 @@ def _all_issues(file_metrics_list):
     return issues
 
 
+def all_issues(file_metrics_list):
+    """Public form of `_all_issues`, for callers outside this module (e.g.
+    `compliance`/`pr_comment`) that need the same flattened, sorted list of
+    Issue objects a scan/diff run produced.
+    """
+    return _all_issues(file_metrics_list)
+
+
 def _worst_files(file_metrics_list, limit=10):
     scored = [(fm.path, score_single_file(fm), fm.total_lines) for fm in file_metrics_list]
     scored.sort(key=lambda t: t[1])

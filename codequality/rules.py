@@ -88,6 +88,11 @@ RULES = {
         "category": "structure", "scope": "scan",
         "description": "Diff mode: a public function's signature changed incompatibly (removed/reordered params).",
     },
+    # -- duplication -------------------------------------------------------
+    "cross-project-duplicate": {
+        "category": "duplication", "scope": "scan",
+        "description": "Block also appears in a different project scanned into the same --dup-index. In-repo duplicates are reflected only in the duplication score; this rule fires for matches against other projects, which the score can't see (opt-in via --cross-project-dup).",
+    },
     # -- documentation ---------------------------------------------------
     "missing-docstring": {
         "category": "documentation", "scope": "scan",
@@ -167,44 +172,48 @@ RULES = {
         "description": "Comment that marks unwritten code (\"implement later\", \"rest goes here\", ...).",
     },
     # -- security --------------------------------------------------------
+    # `cwe`/`owasp` are optional: present on rules with a well-established
+    # mapping (used by `codequality compliance` to group findings for an
+    # audit-style report), absent where a mapping would be tenuous or the
+    # rule isn't a CWE/OWASP-shaped concern in the first place.
     "hardcoded-secret": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-798", "owasp": "A07:2021",
         "description": "String that looks like a credential/API key/token committed in source. Move it to env/secret storage (see also `codequality history-secrets`).",
     },
     "dangerous-eval": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-95", "owasp": "A03:2021",
         "description": "eval/exec on data that may be attacker-influenced.",
     },
     "shell-true": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-78", "owasp": "A03:2021",
         "description": "subprocess with shell=True; prefer an argument list to avoid shell injection.",
     },
     "sql-injection-risk": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-89", "owasp": "A03:2021",
         "description": "SQL built by string formatting/concatenation with runtime values. Use parameterized queries.",
     },
     "unsafe-yaml-load": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-502", "owasp": "A08:2021",
         "description": "yaml.load without a safe Loader can execute arbitrary Python. Use yaml.safe_load.",
     },
     "unsafe-deserialization": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-502", "owasp": "A08:2021",
         "description": "pickle/marshal/shelve loading of untrusted data can execute arbitrary code.",
     },
     "weak-hash": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-327", "owasp": "A02:2021",
         "description": "MD5/SHA-1 used; for anything security-relevant use SHA-256+ (or pass usedforsecurity=False).",
     },
     "insecure-tempfile": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-377",
         "description": "tempfile.mktemp is race-prone; use NamedTemporaryFile/mkstemp.",
     },
     "assert-as-validation": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-703",
         "description": "assert used to validate input; asserts vanish under `python -O`. Raise a real exception.",
     },
     "sensitive-data-logging": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-532", "owasp": "A09:2021",
         "description": "Logging call includes what looks like a password/token/secret value.",
     },
     "fstring-log-arg": {
@@ -212,8 +221,12 @@ RULES = {
         "description": "Logging with pre-formatted f-string; pass lazy %-style args so formatting only happens when the level is enabled.",
     },
     "catastrophic-regex": {
-        "category": "security", "scope": "scan",
+        "category": "security", "scope": "scan", "cwe": "CWE-1333",
         "description": "Regex has nested unbounded quantifiers (e.g. (a+)+); a non-matching input triggers exponential ReDoS backtracking.",
+    },
+    "tainted-data-flow": {
+        "category": "security", "scope": "scan", "cwe": "CWE-20", "owasp": "A03:2021",
+        "description": "Value from an untrusted source (input()/sys.argv/os.environ/request.*) reaches a dangerous sink (eval/exec, shell, SQL execute, unsafe yaml.load) through one or more intermediate variables, not just inline in the same call.",
     },
     # -- correctness -----------------------------------------------------
     "syntax-error": {
@@ -258,7 +271,11 @@ RULES = {
     },
     "dead-code": {
         "category": "correctness", "scope": "scan",
-        "description": "Module-private function/class is never referenced (see also `codequality dead-code-confidence`).",
+        "description": "Top-level function/class is never referenced in code (AST scan; see also `codequality dead-code-confidence`).",
+    },
+    "unused-method": {
+        "category": "correctness", "scope": "scan",
+        "description": "Public class method is never referenced as an attribute access anywhere in the repo (AST scan).",
     },
     "unclosed-resource": {
         "category": "correctness", "scope": "scan",

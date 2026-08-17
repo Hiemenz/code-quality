@@ -1150,3 +1150,101 @@ own subcommand. It shares no code or storage with `scan
 test-to-code-ratio tracking; each of those is a separate timeline over a
 separate JSONL file.
 
+## Compliance report: security findings grouped by CWE/OWASP
+
+```bash
+codequality compliance .
+codequality compliance . --base origin/main --format json
+```
+
+Runs a normal `scan` (or, with `--base`, a `diff`) and re-groups the
+`security`-category findings it produces by CWE ID and OWASP Top 10 2021
+category, for an audit-style summary -- no new detection logic, purely a
+regrouping of issues the scanner already emits. Each security rule that
+has a well-established mapping carries it in `codequality/rules.py`
+(e.g. `sql-injection-risk` -> `CWE-89` / `A03:2021`); a rule without one
+(there isn't always a clean fit) is counted under "unmapped" rather than
+silently dropped, so the total always reconciles with the number of
+security issues found. See `codequality/compliance.py`.
+
+| Flag | Meaning |
+|---|---|
+| `path` | Repo root to check (default `.`) |
+| `--base REF` | Scope to a git diff against this ref instead of the whole repo |
+| `--config FILE` | Path to a `.codequality.toml`/`.json` config file |
+| `--exclude PATTERN` | Glob pattern to exclude (repeatable) |
+| `--format` | `text` (default) or `json` |
+| `--output FILE` | Write the report to a file instead of stdout |
+
+## PR comments: post findings as inline GitHub review comments
+
+```bash
+codequality pr-comment 42            # dry-run preview, no network access
+codequality pr-comment 42 --post     # actually posts the review
+```
+
+The one subcommand in this tool that makes a network call. Every other
+check -- including `dependency-check`'s explicit "no network access,
+ever" promise -- stays purely local (see the top of this README).
+`pr-comment` is a deliberate, narrow, opt-in exception: it runs the same
+diff-scoped scan `codequality diff` does, keeps only the findings that
+land on lines actually in the pull request's diff (GitHub only accepts
+inline comments there), and posts them as a single review via the `gh`
+CLI (not `requests` -- keeps the core tool free of the dependency; this
+subcommand needs `gh` on `PATH` and authenticated, e.g. `gh auth login`).
+No new detection logic here either -- it only reformats findings the
+scanner already produced.
+
+Posting is not the default action of running the command, since it's
+visible to others and each comment is its own GitHub notification:
+without `--post` it prints exactly what would be posted and exits
+without touching the network; `--post` is required to actually call the
+API. The repo (`owner/repo`) and the PR's head commit are auto-detected
+via `gh repo view`/`gh pr view` unless overridden with `--repo`. The base
+and head refs must already be fetched locally (`git fetch origin`, or
+`gh pr checkout 42`) since this tool never fetches on your behalf. A
+finding count above `--max-comments` is capped, with the excess folded
+into the review's summary line instead of posted individually. See
+`codequality/pr_comment.py`.
+
+| Flag | Meaning |
+|---|---|
+| `pr` | Pull request number |
+| `path` | Repo root to scan (default `.`) |
+| `--repo OWNER/REPO` | Override auto-detected repo |
+| `--config FILE` | Path to a `.codequality.toml`/`.json` config file |
+| `--exclude PATTERN` | Glob pattern to exclude (repeatable) |
+| `--max-comments N` | Cap on inline comments in one review (default 50) |
+| `--post` | Actually call the GitHub API; omit for a dry-run preview |
+
+## Cross-project duplication index
+
+```bash
+codequality scan . --cross-project-dup
+codequality scan . --cross-project-dup --dup-project-id my-service --dup-index /shared/dup-index.json
+```
+
+`scan`'s normal duplication check only ever sees one repo at a time, so a
+block copy/pasted from a *different* project is invisible to it. Passing
+`--cross-project-dup` additionally checks every duplicate-candidate block
+against a persisted, on-disk JSON index (default
+`~/.cache/codequality/duplication_index.json`, or `$XDG_CACHE_HOME` if
+set) that can accumulate blocks from any number of repos scanned with
+this flag over time. A match against a *different* project is reported as
+a `cross-project-duplicate` issue (category `duplication`, `info`
+severity) naming the other project and file; a match within the same
+repo is still only reflected in the existing duplication-score count, not
+as its own issue. See `codequality/analyzers/duplication.py`.
+
+Off by default: unlike every other check in this tool, this reads and
+writes a file outside the repo being scanned. The index is soft-capped
+(200k blocks by default) -- once full, new blocks stop being added on
+save rather than evicting old ones, a known limitation worth knowing
+about before pointing a long-lived shared index at a lot of repos.
+
+| Flag | Meaning |
+|---|---|
+| `--cross-project-dup` | Enable the cross-project check (default off) |
+| `--dup-project-id ID` | This repo's identifier in the index (default: its absolute path) |
+| `--dup-index FILE` | Index file location (default `~/.cache/codequality/duplication_index.json`) |
+

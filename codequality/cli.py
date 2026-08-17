@@ -5,18 +5,18 @@ import sys
 
 from codequality import (
     __version__, ai_report, annotation_coverage, api_diff, arch_conformance, baseline as baseline_mod, churn,
-    commit_lint,
+    commit_lint, compliance,
     complexity_coverage_risk, complexity_regression_diff, complexity_trend, config_drift, config_validate, conventions,
     dead_code_confidence,
     dependency_check, dependency_risk, edit_distance, env_check, feature_flags, flakiness, hallucination_metrics,
     history_secrets, hotspots, large_files, migration_check, mutation, orphaned_config, ownership, pipeline,
-    project_init, property_scaffold, report_compare, suppression_debt, todo_age,
+    pr_comment, project_init, property_scaffold, report_compare, suppression_debt, todo_age,
 )
 from codequality.config import Config
 from codequality.coverage_check import DEFAULT_TEST_COMMAND
 from codequality.git_utils import GitError, get_changed_files, get_last_commit_subject, is_git_repo, resolve_default_base
 from codequality.history import append_entry, read_entries, render_trend_text
-from codequality.report import build_summary, render_badge, render_gitlab, render_html, render_json, render_markdown, render_sarif, render_text
+from codequality.report import all_issues, build_summary, render_badge, render_gitlab, render_html, render_json, render_markdown, render_sarif, render_text
 from codequality.scanner import discover_files, scan_changed, scan_repo
 from codequality.scorer import compute_scores
 
@@ -65,6 +65,19 @@ def _add_common_args(p):
         help="Exit non-zero if any issue in this category exists, regardless of the overall score "
              "(e.g. --fail-on security).  Repeatable (or comma-separated) to gate on multiple categories.",
         action="append", default=[],
+    )
+    p.add_argument(
+        "--cross-project-dup", action="store_true",
+        help="Also flag duplicate blocks against a persisted on-disk index shared across repos (opt-in: "
+             "reads/writes a file outside this repo -- default ~/.cache/codequality/duplication_index.json)"
+    )
+    p.add_argument(
+        "--dup-project-id", default=None,
+        help="Identifier for this repo in the cross-project duplication index (default: its absolute path)"
+    )
+    p.add_argument(
+        "--dup-index", default=None, metavar="FILE",
+        help="Path to the cross-project duplication index file (default: ~/.cache/codequality/duplication_index.json)"
     )
 
 
@@ -427,6 +440,45 @@ def _add_dependency_risk_subparser(sub):
     dep_risk_p.add_argument("--top", type=int, default=25, help="Max number of packages to report (default: 25)")
     dep_risk_p.add_argument("--format", choices=["text", "json"], default="text")
     dep_risk_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_compliance_subparser(sub):
+    compliance_p = sub.add_parser(
+        "compliance",
+        help="Group security findings by CWE/OWASP Top 10 2021 for an audit-style report -- pure "
+             "re-grouping of existing scan/diff findings, no new network-facing detection"
+    )
+    compliance_p.add_argument("path", nargs="?", default=".", help="Repo root to check (default: .)")
+    compliance_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    compliance_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    compliance_p.add_argument(
+        "--base", default=None,
+        help="Scope to a git diff against this ref instead of the whole repo (same semantics as `codequality diff`)"
+    )
+    compliance_p.add_argument("--format", choices=["text", "json"], default="text")
+    compliance_p.add_argument("--output", "-o", help="Write the report to a file instead of stdout")
+
+
+def _add_pr_comment_subparser(sub):
+    prc_p = sub.add_parser(
+        "pr-comment",
+        help="Post scan findings on changed lines as inline GitHub PR review comments -- opt-in network "
+             "access via the 'gh' CLI (see README); defaults to a dry-run preview, pass --post to send"
+    )
+    prc_p.add_argument("pr", type=int, help="Pull request number")
+    prc_p.add_argument("path", nargs="?", default=".", help="Repo root to scan (default: .)")
+    prc_p.add_argument("--repo", default=None, help="owner/repo (default: auto-detected via `gh repo view`)")
+    prc_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
+    prc_p.add_argument("--exclude", action="append", default=[], help="Glob pattern to exclude (repeatable)")
+    prc_p.add_argument(
+        "--max-comments", type=int, default=50,
+        help="Cap on inline comments in one review; excess in-diff findings are summarized instead (default: 50)"
+    )
+    prc_p.add_argument(
+        "--post", action="store_true",
+        help="Actually call the GitHub API and post the review. Without this flag, prints a dry-run "
+             "preview of exactly what would be posted and exits without any network access."
+    )
 
 
 def _add_orphaned_config_subparser(sub):
@@ -881,6 +933,8 @@ def build_parser():
     _add_complexity_regression_subparser(sub)
     _add_dependency_check_subparser(sub)
     _add_dependency_risk_subparser(sub)
+    _add_compliance_subparser(sub)
+    _add_pr_comment_subparser(sub)
     _add_orphaned_config_subparser(sub)
     _add_hotspots_subparser(sub)
     _add_complexity_coverage_risk_subparser(sub)
@@ -921,6 +975,12 @@ def _load_config(args, root):
         overrides["check_coverage"] = True
     if getattr(args, "test_command", None):
         overrides["test_command"] = args.test_command
+    if getattr(args, "cross_project_dup", False):
+        overrides["duplication_index"] = {
+            "cross_project": True,
+            "project_id": getattr(args, "dup_project_id", None) or root,
+            "index_path": getattr(args, "dup_index", None),
+        }
     config = Config.load(root, explicit_path=args.config, overrides=overrides)
     if args.exclude:
         config.exclude = list(set(config.exclude) | set(args.exclude))
@@ -1240,6 +1300,98 @@ def cmd_dependency_risk(args):
     else:
         text = dependency_risk.render_text(rows, top_n=args.top)
     _emit(text, args.output)
+    return 0
+
+
+def cmd_compliance(args):
+    """Handle `codequality compliance`: group security-category findings from
+    a normal scan/diff run by CWE/OWASP. See codequality/compliance.py.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+
+    if args.base is not None:
+        if not is_git_repo(root):
+            print(f"error: {root} is not a git repository (--base requires git)", file=sys.stderr)
+            return 2
+        try:
+            changed_files = get_changed_files(args.base, None, root)
+        except GitError as e:
+            print(f"error: git diff failed: {e}", file=sys.stderr)
+            return 2
+        file_metrics = scan_changed(root, config, changed_files, base=args.base)
+    else:
+        file_metrics = scan_repo(root, config)
+
+    issues = [i.to_dict() for i in all_issues(file_metrics)]
+    compliance_report = compliance.build_report(issues)
+    text = json.dumps(compliance_report, indent=2) if args.format == "json" else compliance.render_text(compliance_report)
+    _emit(text, args.output)
+    return 0
+
+
+def cmd_pr_comment(args):
+    """Handle `codequality pr-comment`: post diff findings as inline GitHub
+    PR review comments. Dry-run by default; --post makes the API call. See
+    codequality/pr_comment.py.
+    """
+    root = os.path.abspath(args.path)
+    config = _load_config(args, root)
+
+    if not is_git_repo(root):
+        print(f"error: {root} is not a git repository", file=sys.stderr)
+        return 2
+
+    try:
+        owner, repo = args.repo.split("/", 1) if args.repo else pr_comment.get_repo_info()
+        pr_info = pr_comment.get_pr_info(args.pr)
+    except pr_comment.PrCommentError as e:
+        print(f"error: gh command failed: {e}", file=sys.stderr)
+        return 2
+
+    base, head = f"origin/{pr_info['base_ref']}", pr_info["commit_id"]
+    try:
+        changed_files = get_changed_files(base, head, root)
+    except GitError as e:
+        print(
+            f"error: git diff failed: {e} (do you have '{base}' and PR commit '{head}' fetched locally? "
+            "try `git fetch origin`)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not changed_files:
+        print(f"No changed files between {base} and {head}.")
+        return 0
+
+    file_metrics = scan_changed(root, config, changed_files, base=base)
+    issues = [i.to_dict() for i in all_issues(file_metrics)]
+    comments, dropped = pr_comment.build_review_comments(issues, changed_files, max_comments=args.max_comments)
+
+    if not comments:
+        print("No in-diff findings to comment on.")
+        return 0
+
+    summary_body = f"codequality found {len(comments)} issue(s) on changed lines"
+    if dropped:
+        summary_body += f" ({dropped} more in-diff finding(s) not shown -- raise --max-comments to include them)"
+
+    if not args.post:
+        print(f"Dry run -- would post {len(comments)} comment(s) to {owner}/{repo}#{args.pr} (commit {head[:12]}):\n")
+        for c in comments:
+            print(f"  {c['path']}:{c['line']}  {c['body']}")
+        if dropped:
+            print(f"\n  ...and {dropped} more in-diff finding(s) not shown (raise --max-comments)")
+        print("\nRe-run with --post to actually post this review.")
+        return 0
+
+    try:
+        pr_comment.post_review(owner, repo, args.pr, head, comments, summary_body=summary_body)
+    except pr_comment.PrCommentError as e:
+        print(f"error: failed to post review: {e}", file=sys.stderr)
+        return 2
+
+    print(f"Posted {len(comments)} comment(s) to {owner}/{repo}#{args.pr}.")
     return 0
 
 
@@ -1599,6 +1751,8 @@ _COMMANDS = {
     "complexity-regression": cmd_complexity_regression,
     "dependency-check": cmd_dependency_check,
     "dependency-risk": cmd_dependency_risk,
+    "compliance": cmd_compliance,
+    "pr-comment": cmd_pr_comment,
     "orphaned-config": cmd_orphaned_config,
     "hotspots": cmd_hotspots,
     "complexity-coverage-risk": cmd_complexity_coverage_risk,

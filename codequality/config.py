@@ -123,6 +123,17 @@ DEFAULT_CONFIG = {
     "architecture": {
         "layers": [],
     },
+    # Opt-in cross-project duplication index (see --cross-project-dup /
+    # codequality/analyzers/duplication.py). `project_id` defaults to the
+    # scanned repo's absolute path when unset; `index_path` defaults to
+    # ~/.cache/codequality/duplication_index.json (or $XDG_CACHE_HOME) when
+    # unset. Off by default: this reads/writes a file outside the repo,
+    # which every other check in this tool deliberately avoids.
+    "duplication_index": {
+        "cross_project": False,
+        "project_id": None,
+        "index_path": None,
+    },
 }
 
 
@@ -161,6 +172,7 @@ class Config:
         self.include_generated = merged["include_generated"]
         self.pipeline_steps = [PipelineStep(s) for s in merged["pipeline"]["steps"]]
         self.architecture_layers = merged["architecture"]["layers"]
+        self.duplication_index = merged["duplication_index"]
 
     @classmethod
     def load(cls, root, explicit_path=None, overrides=None):

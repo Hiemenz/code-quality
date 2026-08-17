@@ -11,6 +11,11 @@ number comes from parsing the code (Python via `ast`, other languages via
 fixed, documented formulas. The same input always produces the same
 output — safe to gate a CI pipeline on.
 
+(The "no network access" claim is about the scan/diff/score engine, and
+every standalone subcommand except one: `pr-comment` explicitly posts
+findings to a GitHub PR via the `gh` CLI, and only when you pass `--post`.
+It's the one deliberate, opt-in exception — see its section below.)
+
 Two modes:
 
 - **`scan`** — score the whole repository. Use this to track overall
@@ -279,6 +284,20 @@ codequality annotation-coverage . --min-coverage 80
 
 # Age blanket # noqa / # type: ignore / codequality: ignore via git blame
 codequality suppression-debt . --stale-days 90
+
+# Security findings grouped by CWE / OWASP Top 10 2021, for an audit
+# (see "Compliance report" below)
+codequality compliance .
+
+# Post scan findings on changed lines as inline GitHub PR review comments
+# -- the one subcommand that makes a network call; dry-run without --post
+# (see "PR comments" below)
+codequality pr-comment 42 --post
+
+# Also flag duplicate blocks against a persisted, on-disk index shared
+# across repos, not just within this one scan (see "Cross-project
+# duplication index" below)
+codequality scan . --cross-project-dup
 ```
 
 `scan` and `diff` share the same flags:
@@ -298,6 +317,9 @@ codequality suppression-debt . --stale-days 90
 | `--check-types` | Run mypy and fold its findings into the correctness category (opt-in) |
 | `--check-coverage` | Run the repo's own test suite under coverage.py (opt-in; executes your code) |
 | `--test-command "..."` | Command to run under `--check-coverage`, as args after `python -m` |
+| `--cross-project-dup` | Also flag duplicate blocks against a persisted, on-disk index shared across repos (opt-in — see [Cross-project duplication index](docs/subcommands.md#cross-project-duplication-index)) |
+| `--dup-project-id ID` | This repo's identifier in the cross-project index (default: its absolute path) |
+| `--dup-index FILE` | Cross-project index file location (default `~/.cache/codequality/duplication_index.json`) |
 
 `diff` additionally takes `--base REF` and `--head REF` (default: auto-detect,
 see above).
@@ -861,7 +883,8 @@ Per-subcommand documentation lives in [docs/subcommands.md](docs/subcommands.md)
 `ai-report`, `scaffold-properties`, `dependency-check`, `dependency-risk`,
 `orphaned-config`, `hotspots`, `complexity-coverage-risk`, `env-check`,
 `large-files`, `config-drift`, `migration-check`, `feature-flags`,
-`arch-conformance`, `complexity-trend`.
+`arch-conformance`, `complexity-trend`, `compliance`, `pr-comment`, and
+`scan`/`diff`'s `--cross-project-dup` flag.
 
 ## Pipeline: one gate for format, lint, test, and codequality's own scan
 

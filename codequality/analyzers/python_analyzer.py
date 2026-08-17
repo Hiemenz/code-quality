@@ -36,6 +36,7 @@ from codequality.analyzers.python_loop_perf import string_concat_in_loop_issues
 from codequality.analyzers.python_import_order import import_order_issues
 from codequality.analyzers.python_token_checks import implicit_string_concat_issues
 from codequality.analyzers.python_security import assert_validation_issues, security_issues
+from codequality.analyzers.taint_flow import taint_issues
 from codequality.analyzers.python_test_quality import (
     assertion_free_test_issues,
     mock_only_test_issues,
@@ -832,6 +833,7 @@ def _module_level_issues(tree, path, limits, only_lines, check_imports):
     issues = (
         _unused_import_issues(tree, path, only_lines)
         + security_issues(tree, path, only_lines)
+        + taint_issues(tree, path, only_lines)
         + redos_issues(tree, path, only_lines)
         + assert_validation_issues(tree, path, only_lines)
         + unreachable_code_issues(tree, path, only_lines)

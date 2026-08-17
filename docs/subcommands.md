@@ -1157,15 +1157,20 @@ codequality compliance .
 codequality compliance . --base origin/main --format json
 ```
 
-Runs a normal `scan` (or, with `--base`, a `diff`) and re-groups the
-`security`-category findings it produces by CWE ID and OWASP Top 10 2021
-category, for an audit-style summary -- no new detection logic, purely a
-regrouping of issues the scanner already emits. Each security rule that
-has a well-established mapping carries it in `codequality/rules.py`
-(e.g. `sql-injection-risk` -> `CWE-89` / `A03:2021`); a rule without one
-(there isn't always a clean fit) is counted under "unmapped" rather than
-silently dropped, so the total always reconciles with the number of
-security issues found. See `codequality/compliance.py`.
+Runs a normal `scan` (or, with `--base`, a `diff`) and re-groups its
+security-relevant findings by CWE ID and OWASP Top 10 2021 category, for
+an audit-style summary -- no new detection logic, purely a regrouping of
+issues the scanner already emits. "Security-relevant" is every
+`security`-category finding, plus a handful of rules outside that
+category that still carry a `CWE` id (`unclosed-resource` -> `CWE-404`,
+`deprecated-api` -> `CWE-477`) -- a `correctness`-category issue with no
+such tag is just not what this report is for, so it's left out entirely.
+Each rule that has a well-established mapping carries it in
+`codequality/rules.py` (e.g. `sql-injection-risk` -> `CWE-89` /
+`A03:2021`); a security-category rule without one (there isn't always a
+clean OWASP fit) is counted under "unmapped" rather than silently
+dropped, so the total always reconciles with the number of
+security-relevant findings found. See `codequality/compliance.py`.
 
 | Flag | Meaning |
 |---|---|

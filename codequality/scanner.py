@@ -8,8 +8,8 @@ import os
 
 from codequality import coverage_check, generated_code, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, complexity_regression, dead_code, dead_code_ast, doc_examples, duplication, generic_analyzer,
-    internal_refs, python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
+    circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, internal_refs,
+    python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
 )
 from codequality.analyzers.base import FileMetrics, Issue
 from codequality.config import DEFAULT_IGNORE_DIRS, GENERIC_EXTENSIONS, PYTHON_EXTENSIONS
@@ -153,18 +153,13 @@ def _apply_circular_imports(root, metrics_by_path):
 
 def _apply_dead_code(root, metrics_by_path):
     """Cross-file dead-code detection: needs every Python file's source at
-    once to know whether a top-level function/class or method is referenced
+    once to know whether a top-level function/class is referenced
     *anywhere* in the repo, so -- like duplication -- this only makes
     sense on a full scan, never a diff (a diff has no view of the rest of
     the repo to check references against).
-
-    Uses the AST-based scanner (dead_code_ast) which collects actual code
-    references from AST nodes rather than raw text, and also detects unused
-    public class methods.  The regex-based dead_code module is kept for the
-    dead-code-confidence subcommand which needs its git-blame integration.
     """
     file_sources = _python_file_sources(root, metrics_by_path)
-    for rel_path, issues in dead_code_ast.find_dead_code_ast(file_sources).items():
+    for rel_path, issues in dead_code.find_dead_code(file_sources).items():
         fm = metrics_by_path.get(rel_path)
         if fm is not None:
             fm.issues.extend(issues)

@@ -28,11 +28,16 @@ _SOURCE_SUBSCRIPT_BASES = ("process.argv",)
 
 
 def _text(node, source):
-    return source[node.start_byte():node.end_byte()]
+    """`node`'s source text, going through the UTF-8-encoded bytes since
+    tree-sitter node offsets are *byte* offsets, not str indices (see
+    treesitter_analyzer._node_text for the same fix and why it matters).
+    """
+    encoded = source.encode("utf-8", errors="replace")
+    return encoded[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
 def _line(node):
-    return node.start_position().row + 1
+    return node.start_point.row + 1
 
 
 def _in_scope(lineno, only_lines):
@@ -40,7 +45,7 @@ def _in_scope(lineno, only_lines):
 
 
 def _dotted_name(node, source):
-    kind = node.kind()
+    kind = node.type
     if kind == "identifier":
         return _text(node, source)
     if kind == "member_expression":
@@ -58,7 +63,7 @@ def _source_provenance(node, source):
     expression, else None. JS sources are (almost) all plain member
     access, not calls -- `req.query.id`, not `req.query.get('id')`.
     """
-    kind = node.kind()
+    kind = node.type
     if kind == "member_expression":
         dotted = _dotted_name(node, source)
         if dotted is not None and any(dotted == p or dotted.startswith(p + ".") for p in _SOURCE_MEMBER_PREFIXES):
@@ -73,21 +78,21 @@ def _source_provenance(node, source):
 
 
 def _is_tainted_expr(node, tainted, source):
-    if node.kind() == "identifier" and _text(node, source) in tainted:
+    if node.type == "identifier" and _text(node, source) in tainted:
         return True
-    for i in range(node.named_child_count()):
+    for i in range(node.named_child_count):
         if _is_tainted_expr(node.named_child(i), tainted, source):
             return True
     return False
 
 
 def _first_tainted_name(node, tainted, source):
-    if node.kind() == "identifier":
+    if node.type == "identifier":
         name = _text(node, source)
         if name in tainted:
             return name
         return None
-    for i in range(node.named_child_count()):
+    for i in range(node.named_child_count):
         found = _first_tainted_name(node.named_child(i), tainted, source)
         if found is not None:
             return found
@@ -98,7 +103,7 @@ def _rhs_provenance(rhs, tainted, source):
     prov = _source_provenance(rhs, source)
     if prov is not None:
         return prov
-    if rhs.kind() == "identifier":
+    if rhs.type == "identifier":
         return tainted.get(_text(rhs, source))
     name = _first_tainted_name(rhs, tainted, source)
     return tainted.get(name) if name is not None else None
@@ -110,7 +115,7 @@ def _declarator_target_names(declarator, source):
     same posture as `taint_flow.py`'s `_target_names`).
     """
     name_node = declarator.child_by_field_name("name")
-    if name_node is not None and name_node.kind() == "identifier":
+    if name_node is not None and name_node.type == "identifier":
         return [_text(name_node, source)]
     return []
 
@@ -128,16 +133,16 @@ def _sink_issue(node, path, tainted, source):
     currently-tainted bare identifier argument.
     """
     func = node.child_by_field_name("function")
-    if func is None or func.kind() != "member_expression":
+    if func is None or func.type != "member_expression":
         return None
     method = func.child_by_field_name("property")
     if method is None or _text(method, source) not in _SQL_EXEC_METHODS:
         return None
     args_node = node.child_by_field_name("arguments")
-    if args_node is None or args_node.named_child_count() != 1:
+    if args_node is None or args_node.named_child_count != 1:
         return None
     arg = args_node.named_child(0)
-    if arg.kind() != "identifier":
+    if arg.type != "identifier":
         return None
     name = _text(arg, source)
     if name not in tainted:
@@ -157,9 +162,9 @@ def _scan_sinks(expr, tainted, issues, path, source):
 
 
 def _iter_kind(node, kind):
-    if node.kind() == kind:
+    if node.type == kind:
         yield node
-    for i in range(node.named_child_count()):
+    for i in range(node.named_child_count):
         yield from _iter_kind(node.named_child(i), kind)
 
 
@@ -185,13 +190,13 @@ def _statement_block_children(node):
     """Named children of a `statement_block`/`program` -- the top-level
     body a function or an if/for/while/try's braces wrap.
     """
-    return [node.named_child(i) for i in range(node.named_child_count())]
+    return [node.named_child(i) for i in range(node.named_child_count)]
 
 
 def _walk_declaration(stmt, tainted, issues, path, source):
-    for i in range(stmt.named_child_count()):
+    for i in range(stmt.named_child_count):
         declarator = stmt.named_child(i)
-        if declarator.kind() != "variable_declarator":
+        if declarator.type != "variable_declarator":
             continue
         value = declarator.child_by_field_name("value")
         names = _declarator_target_names(declarator, source)
@@ -208,22 +213,22 @@ def _walk_assignment(expr, tainted, issues, path, source):
     right = expr.child_by_field_name("right")
     if right is not None:
         _scan_sinks(right, tainted, issues, path, source)
-    if left is None or right is None or left.kind() != "identifier":
+    if left is None or right is None or left.type != "identifier":
         return
     prov = _rhs_provenance(right, tainted, source)
     _apply_binding([_text(left, source)], prov, tainted)
 
 
 def _walk_stmt(stmt, tainted, issues, path, source):
-    kind = stmt.kind()
+    kind = stmt.type
 
     if kind in _DECLARATION_KINDS:
         _walk_declaration(stmt, tainted, issues, path, source)
         return
 
     if kind == "expression_statement":
-        expr = stmt.named_child(0) if stmt.named_child_count() else None
-        if expr is not None and expr.kind() == "assignment_expression":
+        expr = stmt.named_child(0) if stmt.named_child_count else None
+        if expr is not None and expr.type == "assignment_expression":
             _walk_assignment(expr, tainted, issues, path, source)
         elif expr is not None:
             _scan_sinks(expr, tainted, issues, path, source)
@@ -240,9 +245,9 @@ def _walk_stmt(stmt, tainted, issues, path, source):
         alternative = stmt.child_by_field_name("alternative")
         if alternative is not None:
             # `else_clause` wraps either a statement_block or another if_statement
-            body = alternative.named_child(0) if alternative.named_child_count() else None
+            body = alternative.named_child(0) if alternative.named_child_count else None
             if body is not None:
-                if body.kind() == "statement_block":
+                if body.type == "statement_block":
                     _walk_stmts(_statement_block_children(body), else_state, issues, path, source)
                 else:
                     _walk_stmt(body, else_state, issues, path, source)
@@ -260,7 +265,7 @@ def _walk_stmt(stmt, tainted, issues, path, source):
         pre_state, body_state = dict(tainted), dict(tainted)
         body = stmt.child_by_field_name("body")
         if body is not None:
-            children = _statement_block_children(body) if body.kind() == "statement_block" else [body]
+            children = _statement_block_children(body) if body.type == "statement_block" else [body]
             _walk_stmts(children, body_state, issues, path, source)
         _merge_branches(tainted, body_state, pre_state)  # loop may run 0 or more times
         return
@@ -290,7 +295,7 @@ def _walk_stmt(stmt, tainted, issues, path, source):
         return  # nested scope: analyzed independently by taint_issues' own sweep
 
     if kind == "return_statement":
-        value = stmt.named_child(0) if stmt.named_child_count() else None
+        value = stmt.named_child(0) if stmt.named_child_count else None
         if value is not None:
             _scan_sinks(value, tainted, issues, path, source)
         return
@@ -302,7 +307,7 @@ def _function_body_stmts(fn_node):
     body = fn_node.child_by_field_name("body")
     if body is None:
         return []
-    if body.kind() == "statement_block":
+    if body.type == "statement_block":
         return _statement_block_children(body)
     return [body]  # arrow function with an expression body, e.g. `x => x.query(y)`
 

@@ -24,7 +24,14 @@ Homepage = "https://github.com/Hiemenz/code-quality"
 Repository = "https://github.com/Hiemenz/code-quality"
 
 [project.optional-dependencies]
-treesitter = ["tree-sitter-language-pack>=1.0.0"]
+# >=1.14: treesitter_analyzer.py/js_security.py/js_taint_flow.py use the
+# current property-based Node API (.type, .start_byte, .start_point,
+# .root_node) -- older releases exposed these as callables instead
+# (.kind(), .start_byte(), ...), which silently misbehaves rather than
+# erroring under property access (a bound-method-vs-str comparison is
+# just always False). Discovered when CI started actually installing
+# this extra for the first time; see git history for the fix.
+treesitter = ["tree-sitter-language-pack>=1.14.0"]
 types = ["mypy>=1.0"]
 coverage = ["coverage>=7.0"]
 mutation = ["mutmut>=3.0"]

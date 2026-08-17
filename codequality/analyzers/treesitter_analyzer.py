@@ -179,7 +179,7 @@ _CONSTRUCTOR_KINDS = {"constructor_declaration"}
 
 def _naming_issue(fn, node, language, path):
     check = _NAME_CHECK.get(language)
-    if check is None or node.kind() in _CONSTRUCTOR_KINDS or fn.name == "<anonymous>":
+    if check is None or node.type in _CONSTRUCTOR_KINDS or fn.name == "<anonymous>":
         return None
     style, pattern = check
     if pattern.match(fn.name):
@@ -203,12 +203,19 @@ def _grammar_for(language, path):
 
 
 def _node_text(node, source):
-    return source[node.start_byte():node.end_byte()]
+    """`node`'s source text. Slicing must go through the UTF-8-encoded
+    bytes, not `source` (a str) directly: tree-sitter node offsets are
+    *byte* offsets, which only happen to line up with str indices for
+    pure-ASCII source -- any multi-byte character earlier in the file
+    would otherwise silently misalign every slice after it.
+    """
+    encoded = source.encode("utf-8", errors="replace")
+    return encoded[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
 def _iter_named(node):
     yield node
-    for i in range(node.named_child_count()):
+    for i in range(node.named_child_count):
         yield from _iter_named(node.named_child(i))
 
 
@@ -226,20 +233,20 @@ def _extract_name(node, source):
     for _ in range(5):
         if declarator is None:
             break
-        if declarator.kind() in _NAME_LEAF_KINDS:
+        if declarator.type in _NAME_LEAF_KINDS:
             return _node_text(declarator, source)
         nested = declarator.child_by_field_name("declarator")
-        if nested is None and declarator.named_child_count() > 0:
+        if nested is None and declarator.named_child_count > 0:
             nested = declarator.named_child(0)
         declarator = nested
     return "<anonymous>"
 
 
 def _count_params(node):
-    for i in range(node.named_child_count()):
+    for i in range(node.named_child_count):
         child = node.named_child(i)
-        if _PARAM_KIND_HINT in child.kind():
-            return child.named_child_count()
+        if _PARAM_KIND_HINT in child.type:
+            return child.named_child_count
     return 0
 
 
@@ -255,9 +262,9 @@ def _function_stats(fn_node, cfg, source):
 
     def _walk(node, depth):
         nonlocal complexity, max_nesting
-        for i in range(node.named_child_count()):
+        for i in range(node.named_child_count):
             child = node.named_child(i)
-            kind = child.kind()
+            kind = child.type
             if kind in cfg["function_kinds"]:
                 continue
             next_depth = depth
@@ -281,8 +288,8 @@ def _has_preceding_comment(lines, lineno, comment_prefix):
 
 
 def _build_function_metrics(fn_node, cfg, path, source, lines, comment_prefix):
-    start = fn_node.start_position().row + 1
-    end = fn_node.end_position().row + 1
+    start = fn_node.start_point.row + 1
+    end = fn_node.end_point.row + 1
     complexity, nesting = _function_stats(fn_node, cfg, source)
     return FunctionMetrics(
         file=path,
@@ -324,10 +331,10 @@ def _function_issues(fn, node, language, path, limits):
 
 def _process_functions(root, cfg, language, path, source, lines, comment_prefix, limits, only_lines, fm):
     for node in _iter_named(root):
-        if node.kind() not in cfg["function_kinds"]:
+        if node.type not in cfg["function_kinds"]:
             continue
-        start = node.start_position().row + 1
-        end = node.end_position().row + 1
+        start = node.start_point.row + 1
+        end = node.end_point.row + 1
         if not _in_scope(start, end, only_lines):
             continue
         fn = _build_function_metrics(node, cfg, path, source, lines, comment_prefix)
@@ -360,8 +367,13 @@ def analyze(path, source, language, limits, only_lines=None):
     loc = sum(1 for l in lines if l.strip())
     comment_prefix = LINE_COMMENT_PREFIXES.get(language, "//")
 
-    tree = parser.parse(source)
-    root = tree.root_node()
+    # Current tree-sitter-language-pack releases require bytes -- some
+    # older ones tolerated a str, which is how this went unnoticed until
+    # CI actually started installing the `treesitter` extra (see
+    # .github/workflows/code-quality.yml). `_node_text` below re-encodes
+    # `source` itself for the same reason: node offsets are byte offsets.
+    tree = parser.parse(source.encode("utf-8", errors="replace"))
+    root = tree.root_node
 
     fm = FileMetrics(path=path, language=language, total_lines=total_lines, loc=loc)
     _process_functions(root, cfg, language, path, source, lines, comment_prefix, limits, only_lines, fm)

@@ -10,8 +10,8 @@ if treesitter_analyzer.AVAILABLE:
 
 def _issues(src, language="javascript", only_lines=None):
     parser = get_parser(language)
-    tree = parser.parse(src)
-    root = tree.root_node()
+    tree = parser.parse(src.encode("utf-8"))
+    root = tree.root_node
     return js_security.security_issues(root, "a.js", src, only_lines)
 
 

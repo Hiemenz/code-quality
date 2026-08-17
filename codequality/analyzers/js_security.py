@@ -29,17 +29,22 @@ _SQL_EXEC_METHODS = {"execute", "executemany", "raw", "query"}
 
 
 def _text(node, source):
-    return source[node.start_byte():node.end_byte()]
+    """`node`'s source text, going through the UTF-8-encoded bytes since
+    tree-sitter node offsets are *byte* offsets, not str indices (see
+    treesitter_analyzer._node_text for the same fix and why it matters).
+    """
+    encoded = source.encode("utf-8", errors="replace")
+    return encoded[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
 def _line(node):
-    return node.start_position().row + 1
+    return node.start_point.row + 1
 
 
 def _in_scope(node, only_lines):
     if only_lines is None:
         return True
-    start, end = node.start_position().row + 1, node.end_position().row + 1
+    start, end = node.start_point.row + 1, node.end_point.row + 1
     return any(start <= ln <= end for ln in only_lines)
 
 
@@ -47,7 +52,7 @@ def _dotted_name(node, source):
     """Best-effort dotted name for an identifier/member_expression chain,
     e.g. 'crypto.createHash' or 'child_process.exec'.
     """
-    kind = node.kind()
+    kind = node.type
     if kind == "identifier":
         return _text(node, source)
     if kind == "member_expression":
@@ -64,13 +69,13 @@ def _call_args(call_node):
     args_node = call_node.child_by_field_name("arguments")
     if args_node is None:
         return []
-    return [args_node.named_child(i) for i in range(args_node.named_child_count())]
+    return [args_node.named_child(i) for i in range(args_node.named_child_count)]
 
 
 def _iter_kind(node, kind):
-    if node.kind() == kind:
+    if node.type == kind:
         yield node
-    for i in range(node.named_child_count()):
+    for i in range(node.named_child_count):
         yield from _iter_kind(node.named_child(i), kind)
 
 
@@ -93,7 +98,7 @@ def _weak_hash_issue(node, path, source):
     if func is None or _dotted_name(func, source) != "crypto.createHash":
         return None
     args = _call_args(node)
-    if not args or args[0].kind() != "string":
+    if not args or args[0].type != "string":
         return None
     algo = _text(args[0], source).strip("'\"").lower()
     if algo not in _WEAK_HASH_ALGOS:
@@ -109,14 +114,14 @@ _SHELL_OPTIONAL_CALLS = {"child_process.spawn", "child_process.execFile", "spawn
 
 
 def _object_has_shell_true(node, source):
-    if node is None or node.kind() != "object":
+    if node is None or node.type != "object":
         return False
-    for pair in (node.named_child(i) for i in range(node.named_child_count())):
-        if pair.kind() != "pair":
+    for pair in (node.named_child(i) for i in range(node.named_child_count)):
+        if pair.type != "pair":
             continue
         key = pair.child_by_field_name("key")
         value = pair.child_by_field_name("value")
-        if key is not None and value is not None and _text(key, source) == "shell" and value.kind() == "true":
+        if key is not None and value is not None and _text(key, source) == "shell" and value.type == "true":
             return True
     return False
 
@@ -156,12 +161,12 @@ def _is_dynamic_string_expr(node):
     as the Python check -- it's the second, separate argument that
     matters, not whether the query text itself has a placeholder.
     """
-    kind = node.kind()
+    kind = node.type
     if kind == "template_string":
-        return any(node.named_child(i).kind() == "template_substitution" for i in range(node.named_child_count()))
+        return any(node.named_child(i).type == "template_substitution" for i in range(node.named_child_count))
     if kind == "binary_expression":
         op = node.child_by_field_name("operator")
-        return op is not None and op.kind() == "+"
+        return op is not None and op.type == "+"
     return False
 
 
@@ -170,7 +175,7 @@ def _sql_injection_issue(node, path, source):
     one dynamically-built string argument.
     """
     func = node.child_by_field_name("function")
-    if func is None or func.kind() != "member_expression":
+    if func is None or func.type != "member_expression":
         return None
     method = func.child_by_field_name("property")
     if method is None or _text(method, source) not in _SQL_EXEC_METHODS:

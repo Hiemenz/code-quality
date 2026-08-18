@@ -422,22 +422,26 @@ codequality dead-code-confidence .
 codequality dead-code-confidence . --stale-days 30 --format json
 ```
 
-The Structure category's cross-file `dead-code` check (see
-[Cross-file dead code](#cross-file-dead-code) above) is a pure snapshot: a
-public top-level function/class either has zero references anywhere else
-in the repo right now, or it doesn't -- it has no notion of *when* that
-code was last touched. A function that looks unused but was written
-yesterday might just be new/in-progress work nobody has wired up yet; one
-that's looked unused for two years is a much safer removal candidate.
-`dead-code-confidence` adds that missing time dimension, the same way
-`todo-age` (above) added one to the `todo-marker` style check: it calls
-straight into `analyzers/dead_code.py`'s `find_dead_code` (no
-re-detection, no re-litigating its exemptions -- `__all__`-exported
-names, dunders, `test_*`/`Test*` hooks, and anything decorated are still
-skipped exactly as they are in a normal `scan`) and, for every finding,
-`git blame -w --line-porcelain HEAD` (same technique as `todo-age`/
-`edit-distance`) finds the commit that introduced the exact `def`/`class`
-line, and that commit's author date gives the finding an age.
+The Correctness category's cross-file `dead-code`/`unused-method` checks
+(see [Cross-file dead code](#cross-file-dead-code) above) are a pure
+snapshot: a public top-level function/class or public method either has
+zero references anywhere else in the repo right now, or it doesn't -- it
+has no notion of *when* that code was last touched. A function that looks
+unused but was written yesterday might just be new/in-progress work
+nobody has wired up yet; one that's looked unused for two years is a much
+safer removal candidate. `dead-code-confidence` adds that missing time
+dimension, the same way `todo-age` (above) added one to the `todo-marker`
+style check: it calls straight into `analyzers/dead_code_ast.py`'s
+`find_dead_code_ast` (no re-detection, no re-litigating its exemptions --
+`__all__`-exported names, dunders, `test_*`/`Test*` hooks, HTTP-verb
+method names, and anything decorated are still skipped exactly as they
+are in a normal `scan`) and, for every finding, `git blame -w
+--line-porcelain HEAD` (same technique as `todo-age`/`edit-distance`)
+finds the commit that introduced the exact `def`/`class` line, and that
+commit's author date gives the finding an age. Each result carries a
+`kind` field (`function`, `class`, or `method`); the text report tags
+methods with a `[method]` suffix so they're distinguishable from
+top-level findings at a glance.
 
 `confidence` is a plain 3-tier label off that single number -- one signal
 can't honestly support more precision than a coarse label, so this

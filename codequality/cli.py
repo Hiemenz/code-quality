@@ -1619,8 +1619,9 @@ def cmd_ai_report(args):
 
 def cmd_dead_code_confidence(args):
     """Handle `codequality dead-code-confidence`: age every cross-file
-    dead-code finding (see codequality/analyzers/dead_code.py) via git
-    blame, and label how safe each looks to remove.
+    dead-code/unused-method finding (see
+    codequality/analyzers/dead_code_ast.py) via git blame, and label how
+    safe each looks to remove.
     """
     root = os.path.abspath(args.path)
     if not is_git_repo(root):

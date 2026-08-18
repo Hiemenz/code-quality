@@ -630,28 +630,36 @@ The `unused-import`/`unused-variable` checks above only ever look at one
 file at a time. `scan` (full repo only — there's no "rest of the repo" to
 check against in `diff` mode, same reasoning as duplication below) also
 runs a whole-project version of that idea: a public top-level function or
-class, defined in one file, whose name never occurs — as a whole word,
-anywhere, excluding its own definition line — in any other scanned file's
-source, is flagged as **`dead-code`**.
+class, defined in one file, that's never referenced — as an AST `Name` or
+`Attribute` load, anywhere — in any other scanned file, is flagged as
+**`dead-code`**; a public class method that's never referenced as an
+attribute access (`obj.method(...)`) anywhere in the repo is flagged as
+**`unused-method`**.
 
-This is intentionally a blunt, text-level check (no import/scope
-resolution, same "no cleverness, just reproducibility" tradeoff every
-other analyzer here makes), so it's reported at `info` severity under the
-Structure category without affecting that category's score — a heuristic
-signal to look at, not something that should fail a build on its own.
-False positives are expected (e.g. a name only ever reached via
-`getattr`/reflection); the checks below rule out the common, obvious
-ones:
+References come from real AST nodes rather than a whole-word text search,
+so a name that merely appears inside a comment or string literal no
+longer counts as "used" — but this is still a heuristic, not full
+scope/type resolution (no cleverness, just reproducibility, same
+tradeoff every other analyzer here makes), so both rules are reported at
+`info` severity under the Correctness category without affecting that
+category's score — a signal to look at, not something that should fail a
+build on its own. False positives are expected (e.g. a name only ever
+reached via `getattr`/reflection); the checks below rule out the common,
+obvious ones:
 
 - names in a module's `__all__`;
 - dunder methods, and the conventional `main()` script entry point;
 - pytest/unittest hooks discovered by name/convention rather than direct
   reference: `test_*` functions, `setUp`/`tearDown` (and the `Class`/
   `Module` variants), and `Test*`-prefixed classes;
+- HTTP-verb method names (`get`, `post`, `put`, `patch`, `delete`, `head`,
+  `options`) — dispatched by web frameworks, never by direct call;
 - anything decorated — a decorator often means external dispatch (a
-  Flask route, a plugin registry, a CLI command) that a text search can't
-  see, so decorated functions/classes are skipped entirely rather than
-  guessed at.
+  Flask route, a plugin registry, a CLI command) that static analysis
+  can't see, so decorated functions/classes/methods are skipped entirely
+  rather than guessed at;
+- methods on a class that's itself already flagged `dead-code` — avoids
+  cascading noise from a class nobody instantiates.
 
 This check alone can't tell a `dead-code` finding that's brand new (maybe
 just not wired up yet) from one that's sat unused for years -- see

@@ -93,7 +93,8 @@ codequality/
 │   ├── scope_check.py       scope-mismatch (diff mode only)
 │   ├── duplication.py       6-line sliding-window hash (cross-file)
 │   ├── circular_imports.py  import-cycle detection (cross-file)
-│   ├── dead_code.py         Cross-file unreferenced top-level names
+│   ├── dead_code.py         Cross-file unreferenced top-level names (regex refs; used by dead-code-confidence)
+│   ├── dead_code_ast.py     Cross-file unreferenced top-level names + methods (AST refs; wired into scan/diff)
 │   ├── internal_refs.py     Cross-file unresolved internal imports/attrs
 │   ├── unused_deps.py       Unused declared dependencies
 │   ├── doc_examples.py      Broken Markdown code-block syntax check
@@ -203,7 +204,7 @@ passes that need the whole repo at once:
 |---|---|---|
 | Duplication | `analyzers/duplication.py` | 6-line sliding-window SHA-256 hash; cross-file duplicate blocks |
 | Circular imports | `analyzers/circular_imports.py` | Directed import graph; SCC detection |
-| Dead code | `analyzers/dead_code.py` | Public top-level names never referenced anywhere else |
+| Dead code | `analyzers/dead_code_ast.py` | Public top-level names (AST refs) and public methods never referenced anywhere else |
 | Internal refs | `analyzers/internal_refs.py` | `from mod import name` where `mod` exists but has no `name` |
 | Unused deps | `analyzers/unused_deps.py` | Packages in requirements files never imported |
 | Doc examples | `analyzers/doc_examples.py` | Fenced ` ```python ` blocks in Markdown that fail `ast.parse` |

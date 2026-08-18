@@ -1078,3 +1078,12 @@ python3 -m unittest discover -s tests
 
 The tool dogfoods itself — `codequality scan .` on this repo is part of
 sanity-checking any change to the analyzers or scorer.
+
+`scripts/scan_repos.py` runs the scanner across a set of external repos
+(GitHub slugs or local paths) and renders a comparison report showing which
+rules fire and how often — useful for sanity-checking a new/changed rule's
+false-positive rate against real-world code before merging it:
+
+```bash
+python3 scripts/scan_repos.py --repos psf/black pallets/flask --output comparison.html
+```

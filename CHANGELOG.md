@@ -8,6 +8,14 @@ project follows semantic versioning.
 
 ### Added
 
+- Cross-file dead-code detection now runs on AST references instead of a
+  whole-word regex (`analyzers/dead_code_ast.py`), so a name that merely
+  appears inside a comment or string literal no longer suppresses a real
+  finding. It also adds `unused-method`: a public class method never
+  referenced as an attribute access anywhere in the repo.
+- `scripts/scan_repos.py` — scan a set of external repos and render a
+  cross-repo rule hit-rate comparison, for sanity-checking a new rule's
+  false-positive rate against real-world code.
 - `codequality explain <rule>` — look up any rule symbol from the terminal
   (`--list` enumerates all rules).
 - `--format badge` on `scan`/`diff` — emits shields.io endpoint JSON so a

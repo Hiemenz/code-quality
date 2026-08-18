@@ -26,9 +26,10 @@ from codequality.analyzers.generic_analyzer import (
     LINE_COMMENT_PREFIXES,
     _scan_line,
 )
-from codequality.analyzers import js_security, js_taint_flow
+from codequality.analyzers import go_security, go_taint_flow, js_security, js_taint_flow
 
 _JS_TS_LANGUAGES = {"javascript", "typescript"}
+_GO_LANGUAGES = {"go"}
 
 try:
     from tree_sitter_language_pack import get_parser as _get_ts_parser
@@ -381,6 +382,10 @@ def analyze(path, source, language, limits, only_lines=None):
     if language in _JS_TS_LANGUAGES:
         fm.issues.extend(js_security.security_issues(root, path, source, only_lines))
         fm.issues.extend(js_taint_flow.taint_issues(root, path, source, only_lines))
+
+    if language in _GO_LANGUAGES:
+        fm.issues.extend(go_security.security_issues(root, path, source, only_lines))
+        fm.issues.extend(go_taint_flow.taint_issues(root, path, source, only_lines))
 
     if total_lines > limits.max_file_lines and only_lines is None:
         msg = f"File is {total_lines} lines long (limit {limits.max_file_lines})"

@@ -181,8 +181,24 @@ intraprocedural" rationale, which carries over unchanged). Both reuse the
 same rule symbols (`weak-hash`, `shell-true`, `sql-injection-risk`,
 `dangerous-eval`, `tainted-data-flow`) the Python checks emit, so
 `codequality compliance` and scoring treat JS/TS findings identically with
-no registry changes. No other tree-sitter language (Go, Java, Rust, ...)
-gets this treatment yet.
+no registry changes.
+
+Go gets the same treatment via `codequality/analyzers/go_security.py`
+(`weak-hash` for `crypto/md5`/`crypto/sha1`'s `New`/`Sum`; `shell-true`
+for `exec.Command`/`exec.CommandContext` invoked with a shell binary as
+one of its string-literal arguments -- Go has no `shell=True`-style flag,
+naming the shell *is* the risk signal; `sql-injection-risk` for
+`Query`/`Exec`/...`Context` variants whose query-text argument is built
+with `fmt.Sprintf`/`+` rather than passed as a literal with separate bind
+parameters -- no `dangerous-eval` equivalent, Go has no idiomatic
+string-to-code execution path) and
+`codequality/analyzers/go_taint_flow.py` (intraprocedural-only, sources
+being `.FormValue`/`.PostFormValue`/`.Header.Get`/`.URL.Query().Get`
+*calls* -- Go's net/http exposes request data via methods, not member
+access like JS's `req.query` -- plus `os.Getenv(...)` and `os.Args[...]`).
+Same rule-symbol reuse, same scoring/compliance integration, no registry
+changes. No other tree-sitter language (Java, Rust, ...) gets this
+treatment yet.
 
 ### Generic heuristic fallback
 

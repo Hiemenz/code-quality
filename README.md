@@ -727,7 +727,18 @@ shaped query building, and taint tracking into SQL sinks from
 `req.query`/`req.params`/`req.body`/`req.headers`/`req.cookies`/
 `process.env`/`process.argv` — the same rule symbols and CWE/OWASP tags
 the Python checks use, so `codequality compliance` treats JS/TS findings
-identically. No other tree-sitter language gets this yet.
+identically.
+
+**Go gets the same treatment**: weak hashes (`crypto/md5`/`crypto/sha1`'s
+`New`/`Sum`), shell injection (`exec.Command`/`exec.CommandContext`
+invoked with a shell binary — `sh`, `bash`, `cmd`, `powershell`, ... — as
+one of its arguments), SQL-injection-shaped query building
+(`Query`/`Exec`/`QueryRow`/...`Context` built with `fmt.Sprintf`/`+`
+instead of a parameterized placeholder), and taint tracking into SQL
+sinks from `.FormValue(...)`/`.PostFormValue(...)`/`.Header.Get(...)`/
+`.URL.Query().Get(...)`/`os.Getenv(...)`/`os.Args[...]`. No
+`dangerous-eval` equivalent — Go has no idiomatic way to compile and run
+a string as code. No other tree-sitter language gets this yet.
 
 ### Diff mode is scoped to the actual change, not just the changed files
 

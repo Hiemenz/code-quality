@@ -8,6 +8,16 @@ project follows semantic versioning.
 
 ### Added
 
+- Go gets the same real security detection JavaScript/TypeScript has
+  (with the `treesitter` extra installed): `weak-hash` for
+  `crypto/md5`/`crypto/sha1`, `shell-true` for `exec.Command`/
+  `exec.CommandContext` invoked with a shell binary, `sql-injection-risk`
+  for `Query`/`Exec`/...`Context` calls built with `fmt.Sprintf`/`+`, and
+  intraprocedural taint tracking into SQL sinks from `.FormValue`/
+  `.PostFormValue`/`.Header.Get`/`.URL.Query().Get`/`os.Getenv`/
+  `os.Args`. Same rule symbols/CWE tags as the Python and JS/TS checks,
+  so `codequality compliance` and scoring need no registry changes
+  (`codequality/analyzers/go_security.py`, `go_taint_flow.py`).
 - `diff --check-coverage` now surfaces patch coverage as its own report
   section instead of only folding it into the Coverage category's 0-100
   score: a `Patch coverage: X% (N/M changed lines covered)` line plus a

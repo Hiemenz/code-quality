@@ -270,7 +270,7 @@ codequality ai-report . --check-imports --check-types
 # is the baseline, report-only (see "Repo conventions" below)
 codequality conventions .
 
-# Auto-fix the five deterministic style rules in-place (or preview with --dry-run)
+# Auto-fix the eight deterministic style/correctness rules in-place (or preview with --dry-run)
 codequality fix . --dry-run
 
 # Scaffold a .codequality.toml and GitHub Actions CI workflow into the repo
@@ -367,7 +367,8 @@ deliberately separate from everything else — see
 
 Five subcommands added in recent versions:
 `codequality fix` (auto-fix trailing-whitespace, f-string-no-placeholder,
-comparison-to-none/true, and redundant-else in-place — supports `--dry-run`),
+comparison-to-none/true, redundant-else, bare-except, tab-indent, and
+single-name unused-import in-place — supports `--dry-run`),
 `codequality init` (scaffold `.codequality.toml` and a GitHub Actions CI
 workflow with a single command),
 `codequality compare` (delta between two `scan --format json` reports;

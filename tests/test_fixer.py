@@ -8,11 +8,14 @@ from codequality.fixer import (
     AppliedFix,
     FixResult,
     SkippedFix,
+    _fix_bare_except,
     _fix_comparison_to_none,
     _fix_comparison_to_true,
     _fix_fstring_no_placeholder,
     _fix_redundant_else,
+    _fix_tab_indent,
     _fix_trailing_whitespace,
+    _fix_unused_import,
     fix_issues,
     render_text,
 )
@@ -309,6 +312,126 @@ class TestFixRedundantElse(unittest.TestCase):
 # fix_issues (integration)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# bare-except
+# ---------------------------------------------------------------------------
+
+class TestFixBareExcept(unittest.TestCase):
+    def _apply(self, src, lineno):
+        lines = _lines(src)
+        ok = _fix_bare_except(lines, lineno)
+        return ok, "".join(line for line in lines if line is not None)
+
+    def test_bare_except_becomes_except_exception(self):
+        ok, result = self._apply("try:\n    x()\nexcept:\n    pass\n", 3)
+        self.assertTrue(ok)
+        self.assertIn("except Exception:\n", result)
+
+    def test_indented_bare_except(self):
+        ok, result = self._apply("def f():\n    try:\n        x()\n    except:\n        pass\n", 4)
+        self.assertTrue(ok)
+        self.assertIn("    except Exception:\n", result)
+
+    def test_preserves_trailing_comment(self):
+        ok, result = self._apply("except:  # noqa\n", 1)
+        self.assertTrue(ok)
+        self.assertIn("except Exception:  # noqa\n", result)
+
+    def test_typed_except_unchanged(self):
+        ok, result = self._apply("except ValueError:\n    pass\n", 1)
+        self.assertFalse(ok)
+        self.assertEqual(result, "except ValueError:\n    pass\n")
+
+    def test_line_out_of_range(self):
+        self.assertFalse(_fix_bare_except(["x\n"], 99))
+
+
+# ---------------------------------------------------------------------------
+# tab-indent
+# ---------------------------------------------------------------------------
+
+class TestFixTabIndent(unittest.TestCase):
+    def _apply(self, src, lineno):
+        lines = _lines(src)
+        ok = _fix_tab_indent(lines, lineno)
+        return ok, "".join(line for line in lines if line is not None)
+
+    def test_leading_tab_expanded(self):
+        ok, result = self._apply("\tx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertEqual(result, "    x = 1\n")
+
+    def test_mixed_leading_tabs_and_spaces(self):
+        ok, result = self._apply("  \tx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertEqual(result, "      x = 1\n")
+
+    def test_tab_inside_string_not_touched(self):
+        ok, result = self._apply('x = "a\tb"\n', 1)
+        self.assertFalse(ok)
+        self.assertEqual(result, 'x = "a\tb"\n')
+
+    def test_no_tab_unchanged(self):
+        ok, result = self._apply("    x = 1\n", 1)
+        self.assertFalse(ok)
+
+
+# ---------------------------------------------------------------------------
+# unused-import
+# ---------------------------------------------------------------------------
+
+class TestFixUnusedImport(unittest.TestCase):
+    def _apply(self, src, lineno):
+        lines = _lines(src)
+        ok, reason = _fix_unused_import(lines, lineno)
+        return ok, reason, "".join(line for line in lines if line is not None)
+
+    def test_single_name_import_deleted(self):
+        ok, reason, result = self._apply("import re\nx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertEqual(result, "x = 1\n")
+
+    def test_from_import_single_name_deleted(self):
+        ok, reason, result = self._apply("from os import path\nx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertEqual(result, "x = 1\n")
+
+    def test_from_import_with_as_deleted(self):
+        ok, reason, result = self._apply("from os import path as p\nx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertEqual(result, "x = 1\n")
+
+    def test_dotted_import_deleted(self):
+        ok, reason, result = self._apply("import os.path\nx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertEqual(result, "x = 1\n")
+
+    def test_multi_name_import_skipped(self):
+        ok, reason, result = self._apply("import os, sys\nx = 1\n", 1)
+        self.assertFalse(ok)
+        self.assertIn("multiple names", reason)
+        self.assertEqual(result, "import os, sys\nx = 1\n")
+
+    def test_indented_import_skipped(self):
+        ok, reason, result = self._apply("try:\n    import simplejson\nexcept ImportError:\n    pass\n", 2)
+        self.assertFalse(ok)
+        self.assertIn("indented", reason)
+
+    def test_multiline_parenthesized_import_skipped(self):
+        ok, reason, result = self._apply("from os import (\n    path,\n)\nx = 1\n", 1)
+        self.assertFalse(ok)
+
+    def test_single_line_parenthesized_import_deleted(self):
+        ok, reason, result = self._apply("from os import (path)\nx = 1\n", 1)
+        self.assertTrue(ok)
+        self.assertEqual(result, "x = 1\n")
+
+    def test_non_import_line_skipped(self):
+        ok, reason, result = self._apply("x = 1\n", 1)
+        self.assertFalse(ok)
+
+
 class TestFixIssues(unittest.TestCase):
     def _run(self, content, issues, dry_run=False, tmp_path=None):
         import os, tempfile
@@ -361,6 +484,20 @@ class TestFixIssues(unittest.TestCase):
         )
         self.assertNotIn('f"', new)
 
+    def test_unused_import_fixed(self):
+        results, new = self._run(
+            "import re\nx = 1\n",
+            [{"file": "test.py", "line": 1, "symbol": "unused-import"}],
+        )
+        self.assertEqual(new, "x = 1\n")
+
+    def test_bare_except_fixed(self):
+        results, new = self._run(
+            "try:\n    x()\nexcept:\n    pass\n",
+            [{"file": "test.py", "line": 3, "symbol": "bare-except"}],
+        )
+        self.assertIn("except Exception:", new)
+
     def test_diff_available_in_dry_run(self):
         results, _ = self._run(
             "x = 1   \n",
@@ -398,12 +535,16 @@ class TestRenderText(unittest.TestCase):
 
 
 class TestFixableRules(unittest.TestCase):
-    def test_all_five_present(self):
+    def test_all_eight_present(self):
         self.assertIn("trailing-whitespace", FIXABLE_RULES)
         self.assertIn("f-string-no-placeholder", FIXABLE_RULES)
         self.assertIn("comparison-to-none", FIXABLE_RULES)
         self.assertIn("comparison-to-true", FIXABLE_RULES)
         self.assertIn("redundant-else", FIXABLE_RULES)
+        self.assertIn("bare-except", FIXABLE_RULES)
+        self.assertIn("tab-indent", FIXABLE_RULES)
+        self.assertIn("unused-import", FIXABLE_RULES)
+        self.assertEqual(len(FIXABLE_RULES), 8)
 
 
 if __name__ == "__main__":

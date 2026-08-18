@@ -8,6 +8,10 @@ project follows semantic versioning.
 
 ### Added
 
+- `codequality fix` gains three more auto-fixable rules: `bare-except`
+  (`except:` → `except Exception:`), `tab-indent` (expand leading tabs to
+  4 spaces), and `unused-import` (delete a top-level, single-name import
+  statement) — eight rules total, up from five.
 - Cross-file dead-code detection now runs on AST references instead of a
   whole-word regex (`analyzers/dead_code_ast.py`), so a name that merely
   appears inside a comment or string literal no longer suppresses a real

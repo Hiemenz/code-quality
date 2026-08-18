@@ -62,7 +62,7 @@ codequality/
 ├── git_utils.py             Thin wrappers around git CLI calls
 ├── history.py               --record-history JSONL append/read
 ├── baseline.py              Baseline snapshot + forgiveness logic
-├── fixer.py                 In-place auto-fix engine (5 rules)
+├── fixer.py                 In-place auto-fix engine (8 rules)
 ├── report_compare.py        compare subcommand: delta between two JSON reports
 ├── annotation_coverage.py   annotation-coverage subcommand
 ├── suppression_debt.py      suppression-debt subcommand (git blame aging)
@@ -286,7 +286,7 @@ penalties.
 
 ## Fixer
 
-`fixer.py` implements the five rules with a single, unambiguous correct
+`fixer.py` implements eight rules with a single, unambiguous correct
 rewrite:
 
 | Rule | Transform |
@@ -296,11 +296,15 @@ rewrite:
 | `comparison-to-none` | `== None` → `is None`, `!= None` → `is not None` |
 | `comparison-to-true` | `x == True` → `x`, `x == False` → `not x`, etc. (simple names/attributes only) |
 | `redundant-else` | Remove the `else:` line and dedent its body by one level |
+| `bare-except` | `except:` → `except Exception:` |
+| `tab-indent` | Expand tabs found in a line's *leading* whitespace to 4 spaces (tabs elsewhere on the line are left alone) |
+| `unused-import` | Delete a top-level (zero-indent), single-name `import`/`from ... import` statement |
 
 The engine processes issues bottom-to-top within each file so that the
-`redundant-else` line removal doesn't shift the line numbers of earlier
-issues. Files are read and written with `newline=""` to preserve CRLF
-endings. `--dry-run` produces a unified diff without writing any files.
+`redundant-else`/`unused-import` line removals don't shift the line
+numbers of earlier issues. Files are read and written with `newline=""`
+to preserve CRLF endings. `--dry-run` produces a unified diff without
+writing any files.
 
 ---
 

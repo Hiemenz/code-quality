@@ -1,4 +1,5 @@
-"""Auto-fix engine for the five deterministic style rules with a single correct rewrite.
+"""Auto-fix engine for the eight deterministic style/correctness rules with a
+single correct rewrite.
 
 Rules handled (pure text or simple line-count manipulation, no LLM, no network):
   trailing-whitespace      -- strip trailing whitespace from the flagged line
@@ -6,14 +7,27 @@ Rules handled (pure text or simple line-count manipulation, no LLM, no network):
   comparison-to-none       -- == None → is None,  != None → is not None
   comparison-to-true       -- == True/False → truthiness (simple names/attributes only)
   redundant-else           -- drop the else: line and dedent its body by one level
+  bare-except              -- except: → except Exception:
+  tab-indent               -- expand leading tabs to 4 spaces
+  unused-import            -- delete a top-level, single-name import statement
 
 Fixes are applied bottom-to-top within each file so that line-number shifts from
-redundant-else (which removes a line) do not invalidate earlier issue line numbers.
+redundant-else/unused-import (which remove a line) do not invalidate earlier
+issue line numbers.
 
-Limitation: comparison-to-none/true fixes use a text-level regex and may
-incorrectly modify `== None` / `== True` that appear inside string literals or
-comments on the same line as a real comparison. This is rare in practice; use
---dry-run to review changes before writing.
+Limitations, all deliberately conservative -- see --dry-run to review changes
+before writing:
+- comparison-to-none/true fixes use a text-level regex and may incorrectly
+  modify `== None` / `== True` that appear inside string literals or comments
+  on the same line as a real comparison. This is rare in practice.
+- tab-indent only expands tabs found in a line's *leading* whitespace; a tab
+  elsewhere on the line (e.g. inside a string literal) is left untouched
+  rather than risk altering the string's content.
+- unused-import only deletes import statements that (a) have zero leading
+  indentation -- an indented import may be the sole statement in a
+  try/if/function body, and deleting it would leave an empty, invalid suite
+  -- and (b) bind exactly one name -- `import a, b` where only `b` is unused
+  is skipped rather than guessing which comma-separated segment to remove.
 """
 
 import difflib
@@ -28,6 +42,9 @@ FIXABLE_RULES = frozenset({
     "comparison-to-none",
     "comparison-to-true",
     "redundant-else",
+    "bare-except",
+    "tab-indent",
+    "unused-import",
 })
 
 
@@ -233,6 +250,84 @@ def _fix_redundant_else(lines, else_lineno):
     return True
 
 
+_BARE_EXCEPT_RE = re.compile(r"^(\s*)except\s*:")
+
+
+def _fix_bare_except(lines, lineno):
+    idx = lineno - 1
+    if idx >= len(lines) or lines[idx] is None:
+        return False
+    line = lines[idx]
+    new_line, n = _BARE_EXCEPT_RE.subn(r"\1except Exception:", line, count=1)
+    if n == 0:
+        return False
+    lines[idx] = new_line
+    return True
+
+
+_LEADING_WS_RE = re.compile(r"^[ \t]*")
+
+
+def _fix_tab_indent(lines, lineno):
+    idx = lineno - 1
+    if idx >= len(lines) or lines[idx] is None:
+        return False
+    line = lines[idx]
+    leading = _LEADING_WS_RE.match(line).group(0)
+    if "\t" not in leading:
+        return False  # tab is elsewhere on the line (e.g. inside a string); don't touch content
+    lines[idx] = leading.replace("\t", "    ") + line[len(leading):]
+    return True
+
+
+def _import_alias_count(line):
+    """Number of comma-separated aliases bound by the import statement on
+    `line`, or None if `line` isn't a single-line import statement this
+    fixer can safely parse (spans multiple lines, or doesn't start with
+    `import `/`from `).
+    """
+    stmt = line.rstrip("\r\n")
+    if "#" in stmt:
+        stmt = stmt.split("#", 1)[0]
+    stmt = stmt.rstrip()
+    if stmt.endswith("\\"):
+        return None  # explicit line continuation
+    if stmt.startswith("from "):
+        marker = " import "
+        pos = stmt.find(marker)
+        if pos == -1:
+            return None
+        names_part = stmt[pos + len(marker):].strip()
+    elif stmt.startswith("import "):
+        names_part = stmt[len("import "):].strip()
+    else:
+        return None
+    if names_part.startswith("("):
+        if not names_part.endswith(")"):
+            return None  # multi-line parenthesized import
+        names_part = names_part[1:-1].strip()
+    if not names_part:
+        return None
+    names = [n for n in names_part.split(",") if n.strip()]
+    return len(names) or None
+
+
+def _fix_unused_import(lines, lineno):
+    idx = lineno - 1
+    if idx >= len(lines) or lines[idx] is None:
+        return False, "line not found"
+    line = lines[idx]
+    if line[:1] in (" ", "\t"):
+        return False, "indented import (may be the sole statement in a try/if/function body); skipping"
+    count = _import_alias_count(line)
+    if count is None:
+        return False, "could not parse as a single-line import statement"
+    if count != 1:
+        return False, "line imports multiple names; skipping to avoid removing a used import"
+    lines[idx] = None
+    return True, None
+
+
 # ---------------------------------------------------------------------------
 # File-level fix driver
 # ---------------------------------------------------------------------------
@@ -294,6 +389,25 @@ def _fix_file(abs_path, root, issues, dry_run=False):
             ok = _fix_redundant_else(lines, lineno)
             (result.applied if ok else result.skipped).append(
                 AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "else: line not found")
+            )
+
+        elif rule == "bare-except":
+            ok = _fix_bare_except(lines, lineno)
+            (result.applied if ok else result.skipped).append(
+                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "bare 'except:' not found on line")
+            )
+
+        elif rule == "tab-indent":
+            ok = _fix_tab_indent(lines, lineno)
+            (result.applied if ok else result.skipped).append(
+                AppliedFix(lineno, rule) if ok else
+                SkippedFix(lineno, rule, "no tab in leading indentation (tab may be inside a string/comment)")
+            )
+
+        elif rule == "unused-import":
+            ok, reason = _fix_unused_import(lines, lineno)
+            (result.applied if ok else result.skipped).append(
+                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, reason or "could not fix")
             )
 
     new_text = "".join(line for line in lines if line is not None)

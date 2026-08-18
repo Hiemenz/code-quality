@@ -8,6 +8,13 @@ project follows semantic versioning.
 
 ### Added
 
+- `diff --check-coverage` now surfaces patch coverage as its own report
+  section instead of only folding it into the Coverage category's 0-100
+  score: a `Patch coverage: X% (N/M changed lines covered)` line plus a
+  `file:44-51`-style listing of which changed lines the test suite
+  doesn't reach, in `text`/`markdown`/`html`, and a `patch_coverage`
+  object (`ratio`, `covered_lines`, `total_lines`, `uncovered`) in
+  `--format json`.
 - `codequality fix` gains three more auto-fixable rules: `bare-except`
   (`except:` → `except Exception:`), `tab-indent` (expand leading tabs to
   4 spaces), and `unused-import` (delete a top-level, single-name import

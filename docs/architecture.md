@@ -246,7 +246,16 @@ code — so large files and small files compete on equal terms.
 **`build_summary()`** — assembles a language-agnostic dict from the list of
 `FileMetrics` and the `ScoreResult`. This dict is the single intermediate
 representation consumed by all renderers, and what `scan --format json`
-serialises directly.
+serialises directly. Its `patch_coverage` key (diff mode + `--check-coverage`
+only) is a distinct summary of *which changed lines* tests don't reach —
+`{ratio, covered_lines, total_lines, uncovered: [{file, lines}]}` — built
+from `FileMetrics.coverage_covered_lines`/`coverage_uncovered_lines` (the
+changed-line subset of `coverage.py`'s covered/missing sets, stashed by
+`scanner._apply_coverage`). This is separate from `coverage_ratio`, which
+folds into the Coverage category's single 0-100 score and never lists
+individual lines; `patch_coverage` is the Codecov/Coveralls-style per-PR
+gate — `text`/`markdown`/`html` render it as a `file:44-51`-style range
+listing.
 
 **`render_*(summary)`** — one function per output format:
 

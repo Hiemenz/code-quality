@@ -888,7 +888,26 @@ in this tool never executes the code it's scoring. `--test-command` takes
 the args you'd normally pass after `python -m` (default:
 `"unittest discover -s tests"`); override it for `pytest`, `nose2`,
 whatever the repo actually uses. In `diff` mode, the ratio measures just
-the lines that changed ("patch coverage"), not the whole file.
+the lines that changed ("patch coverage"), not the whole file, and folds
+into the Coverage category score exactly like whole-file coverage does in
+`scan` mode.
+
+`diff` additionally surfaces patch coverage as its own report section
+(not just baked into the category score), so a reviewer sees it directly
+rather than reverse-engineering it from a single 0-100 number:
+
+```
+Patch coverage: 25.0% (1/4 changed lines covered)
+Uncovered changed lines:
+  lib.py:6-8
+```
+
+Every format carries it: `--format json` adds a top-level `patch_coverage`
+object (`ratio`, `covered_lines`, `total_lines`, and an `uncovered` list of
+`{file, lines}`) whenever `diff --check-coverage` measured anything;
+`markdown`/`html` render the same collapsed-range listing for a PR
+comment. It's `null`/absent in `scan` mode (no single "changed lines" set
+to report against) and when nothing was measured.
 
 ## Further reading
 

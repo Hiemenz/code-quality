@@ -99,6 +99,40 @@ def _totals(file_metrics_list, issues):
     }
 
 
+def _patch_coverage(file_metrics_list, mode):
+    """Diff-mode "patch coverage": of the lines this diff actually
+    changed, what fraction does the test suite exercise -- and which
+    specific ones don't it reach? Distinct from the `coverage` category
+    score (which folds patch coverage into the aggregate 0-100 alongside
+    every other category and never lists individual lines); this is the
+    Codecov/Coveralls-style per-PR gate a reviewer actually wants to see.
+
+    None unless mode is "diff" and --check-coverage measured at least one
+    file (same "absence isn't a penalty, just missing data" convention as
+    scorer.score_coverage). Uses exact covered/uncovered line COUNTS
+    (summed across files) rather than averaging each file's float ratio,
+    so the aggregate ratio doesn't drift from rounding.
+    """
+    if mode != "diff":
+        return None
+    measured = [fm for fm in file_metrics_list if fm.coverage_ratio is not None]
+    if not measured:
+        return None
+    total_covered = sum(len(fm.coverage_covered_lines) for fm in measured)
+    total_uncovered = sum(len(fm.coverage_uncovered_lines) for fm in measured)
+    total = total_covered + total_uncovered
+    return {
+        "ratio": (total_covered / total) if total else None,
+        "covered_lines": total_covered,
+        "total_lines": total,
+        "uncovered": [
+            {"file": fm.path, "lines": sorted(fm.coverage_uncovered_lines)}
+            for fm in sorted(measured, key=lambda fm: fm.path)
+            if fm.coverage_uncovered_lines
+        ],
+    }
+
+
 def _threshold(issues, score_result, fail_under, fail_on):
     """Evaluate --fail-under/--fail-on for the report's `threshold` block."""
     score_passed = score_result.overall >= fail_under if fail_under is not None else True
@@ -131,6 +165,7 @@ def build_summary(file_metrics_list, score_result, mode, root, diff_info=None, f
         "complex_functions": _complex_functions(file_metrics_list),
         "issues": [i.to_dict() for i in issues],
         "diff": diff_info,
+        "patch_coverage": _patch_coverage(file_metrics_list, mode),
         "threshold": _threshold(issues, score_result, fail_under, fail_on),
     }
 
@@ -180,6 +215,30 @@ def render_badge(summary):
     )
 
 
+def _collapse_ranges(numbers):
+    """Sorted ints -> list of (lo, hi) contiguous runs, e.g. [1,2,3,7] ->
+    [(1,3),(7,7)] -- turns a flat uncovered-line list into readable
+    file:44-51-style ranges.
+    """
+    ranges = []
+    start = prev = None
+    for n in sorted(numbers):
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            ranges.append((start, prev))
+            start = prev = n
+    if start is not None:
+        ranges.append((start, prev))
+    return ranges
+
+
+def _format_ranges(numbers):
+    return ", ".join(f"{lo}" if lo == hi else f"{lo}-{hi}" for lo, hi in _collapse_ranges(numbers))
+
+
 def render_text(summary, use_color=True, max_issues=25):
     """Render `summary` as a colored, human-readable terminal report."""
     def c(name):
@@ -211,6 +270,19 @@ def render_text(summary, use_color=True, max_issues=25):
         f"{c('dim')}Files analyzed: {s['files_analyzed']}   LOC: {s['loc']}   "
         f"Functions: {s['functions']}   Issues: {s['issues']}{suppressed_note}{c('reset')}"
     )
+
+    pc = summary.get("patch_coverage")
+    if pc:
+        lines.append("")
+        pct = pc["ratio"] * 100 if pc["ratio"] is not None else 0.0
+        lines.append(
+            f"{c('bold')}Patch coverage{c('reset')}: {pct:.1f}% "
+            f"({pc['covered_lines']}/{pc['total_lines']} changed lines covered)"
+        )
+        if pc["uncovered"]:
+            lines.append(f"{c('dim')}Uncovered changed lines:{c('reset')}")
+            for entry in pc["uncovered"]:
+                lines.append(f"  {entry['file']}:{_format_ranges(entry['lines'])}")
 
     if summary["worst_files"]:
         lines.append("")
@@ -365,6 +437,20 @@ def render_markdown(summary):
         f"Functions: {s['functions']} · Issues: {s['issues']}{suppressed_note}"
     )
 
+    pc = summary.get("patch_coverage")
+    if pc:
+        lines.append("")
+        pct = pc["ratio"] * 100 if pc["ratio"] is not None else 0.0
+        lines.append(f"### Patch coverage: **{pct:.1f}%** ({pc['covered_lines']}/{pc['total_lines']} changed lines covered)")
+        if pc["uncovered"]:
+            lines.append("")
+            lines.append("<details><summary>Uncovered changed lines</summary>")
+            lines.append("")
+            for entry in pc["uncovered"]:
+                lines.append(f"- `{entry['file']}:{_format_ranges(entry['lines'])}`")
+            lines.append("")
+            lines.append("</details>")
+
     if summary["worst_files"]:
         lines.append("")
         lines.append("### Lowest-scoring files")
@@ -441,6 +527,26 @@ def render_html(summary):
             f'<td class="num">{pct:.1f}</td>'
             f'<td class="num">{cat["weight"]}</td></tr>\n'
         )
+
+    # Patch coverage section (diff mode + --check-coverage only)
+    pc_section = ""
+    pc = summary.get("patch_coverage")
+    if pc:
+        pct = pc["ratio"] * 100 if pc["ratio"] is not None else 0.0
+        uncovered_rows = "".join(
+            f'<tr><td class="mono">{_h(entry["file"])}</td><td class="mono">{_h(_format_ranges(entry["lines"]))}</td></tr>\n'
+            for entry in pc["uncovered"]
+        )
+        uncovered_table = (
+            f'<table><thead><tr><th>File</th><th>Uncovered lines</th></tr></thead>'
+            f'<tbody>{uncovered_rows}</tbody></table>'
+            if uncovered_rows else ""
+        )
+        pc_section = f"""
+<h2>Patch coverage</h2>
+<p>{pct:.1f}% ({pc['covered_lines']}/{pc['total_lines']} changed lines covered)</p>
+{uncovered_table}
+"""
 
     # Worst files rows
     wf_rows = "".join(
@@ -567,6 +673,7 @@ tr:nth-child(even) {{ background: #f9fafb; }}
 <tbody>{cat_rows}</tbody>
 </table>
 
+{pc_section}
 {wf_section}
 {issues_section}
 

@@ -279,7 +279,10 @@ def _apply_coverage(root, config, metrics_by_path, changed_files=None):
     per-file ratio to each matching FileMetrics -- this executes the
     target repo's code, unlike every other check here, which is why it's
     opt-in (--check-coverage). In diff mode, the ratio is "patch coverage"
-    (just the added lines), not whole-file coverage.
+    (just the added lines), not whole-file coverage; the changed-line
+    covered/uncovered sets are also stashed on the FileMetrics so the
+    report layer can list exactly which changed lines tests don't reach
+    (see report.py's patch_coverage summary block).
     """
     if not config.check_coverage or not coverage_check.AVAILABLE:
         return
@@ -294,6 +297,9 @@ def _apply_coverage(root, config, metrics_by_path, changed_files=None):
         computed = coverage_check.ratio(lines, only_lines)
         if computed is not None:
             fm.coverage_ratio = computed
+        if only_lines is not None:
+            fm.coverage_covered_lines = frozenset(lines["covered"] & only_lines)
+            fm.coverage_uncovered_lines = frozenset(lines["missing"] & only_lines)
 
 
 def _apply_signature_diff(root, metrics_by_path, base):

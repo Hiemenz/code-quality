@@ -35,30 +35,24 @@ Reuses the same rule symbols `python_security.py`/`js_security.py` emit
 scoring pick up Go findings with no registry changes.
 """
 
+from codequality.analyzers._ts_helpers import iter_kind as _iter_kind
+from codequality.analyzers._ts_helpers import node_line as _line
+from codequality.analyzers._ts_helpers import node_text as _text
 from codequality.analyzers.base import Issue
 
 _SQL_EXEC_METHODS = {"Query", "QueryContext", "QueryRow", "QueryRowContext", "Exec", "ExecContext"}
 _WEAK_HASH_PACKAGES = {"md5", "sha1"}
 _WEAK_HASH_FUNCS = {"New", "Sum"}
+_WEAK_HASH_IMPORT_REQUIRED = {
+    "md5": "crypto/md5",
+    "sha1": "crypto/sha1",
+}
 _SHELL_BINARIES = {
     "sh", "bash", "zsh", "ksh", "csh", "dash",
     "/bin/sh", "/bin/bash", "/bin/zsh", "/usr/bin/env",
     "cmd", "cmd.exe", "powershell", "powershell.exe",
 }
 _STRING_LITERAL_KINDS = {"interpreted_string_literal", "raw_string_literal"}
-
-
-def _text(node, source):
-    """`node`'s source text, going through the UTF-8-encoded bytes since
-    tree-sitter node offsets are *byte* offsets, not str indices (see
-    treesitter_analyzer._node_text for the same fix and why it matters).
-    """
-    encoded = source.encode("utf-8", errors="replace")
-    return encoded[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-
-
-def _line(node):
-    return node.start_point.row + 1
 
 
 def _in_scope(node, only_lines):
@@ -68,13 +62,13 @@ def _in_scope(node, only_lines):
     return any(start <= ln <= end for ln in only_lines)
 
 
-def _string_literal_value(node, source):
+def _string_literal_value(node, source_bytes):
     if node.type not in _STRING_LITERAL_KINDS:
         return None
-    return _text(node, source).strip("`\"")
+    return _text(node, source_bytes).strip('`"')
 
 
-def _selector_parts(node, source):
+def _selector_parts(node, source_bytes):
     """(operand_text, field_text) for a `selector_expression`, e.g.
     `md5.New` -> ("md5", "New"), or None if `node` isn't one.
     """
@@ -84,7 +78,7 @@ def _selector_parts(node, source):
     field = node.child_by_field_name("field")
     if operand is None or field is None:
         return None
-    return _text(operand, source), _text(field, source)
+    return _text(operand, source_bytes), _text(field, source_bytes)
 
 
 def _call_args(call_node):
@@ -94,22 +88,32 @@ def _call_args(call_node):
     return [args_node.named_child(i) for i in range(args_node.named_child_count)]
 
 
-def _iter_kind(node, kind):
-    if node.type == kind:
-        yield node
-    for i in range(node.named_child_count):
-        yield from _iter_kind(node.named_child(i), kind)
+def _imported_packages(root, source_bytes):
+    """Set of Go package path strings imported by this file
+    (e.g. {'crypto/md5', 'fmt', 'database/sql'}).
+    """
+    packages = set()
+    for imp_decl in _iter_kind(root, "import_declaration"):
+        for spec in _iter_kind(imp_decl, "import_spec"):
+            path_node = spec.child_by_field_name("path")
+            if path_node is not None:
+                packages.add(_text(path_node, source_bytes).strip('"`'))
+    return packages
 
 
-def _weak_hash_issue(node, path, source):
+def _weak_hash_issue(node, path, source_bytes, imports):
     func = node.child_by_field_name("function")
     if func is None:
         return None
-    parts = _selector_parts(func, source)
+    parts = _selector_parts(func, source_bytes)
     if parts is None:
         return None
     pkg, fn = parts
     if pkg not in _WEAK_HASH_PACKAGES or fn not in _WEAK_HASH_FUNCS:
+        return None
+    # Only flag if the file actually imports the weak crypto package -- prevents
+    # false positives from locally-defined types that share the package name.
+    if _WEAK_HASH_IMPORT_REQUIRED.get(pkg) not in imports:
         return None
     return Issue(
         path, _line(node), "security", "warn", "weak-hash",
@@ -117,7 +121,7 @@ def _weak_hash_issue(node, path, source):
     )
 
 
-def _shell_true_issue(node, path, source):
+def _shell_true_issue(node, path, source_bytes, imports):
     """`exec.Command`/`exec.CommandContext` is the only way a Go program
     invokes a shell; the signal is any string-literal argument naming a
     shell binary, checked positionally-agnostic since `CommandContext`'s
@@ -126,14 +130,14 @@ def _shell_true_issue(node, path, source):
     func = node.child_by_field_name("function")
     if func is None:
         return None
-    parts = _selector_parts(func, source)
+    parts = _selector_parts(func, source_bytes)
     if parts is None:
         return None
     pkg, fn = parts
     if pkg != "exec" or fn not in ("Command", "CommandContext"):
         return None
     for arg in _call_args(node):
-        value = _string_literal_value(arg, source)
+        value = _string_literal_value(arg, source_bytes)
         if value is not None and value.lower() in _SHELL_BINARIES:
             return Issue(
                 path, _line(node), "security", "error", "shell-true",
@@ -143,18 +147,18 @@ def _shell_true_issue(node, path, source):
     return None
 
 
-def _is_dynamic_string_expr(node, source):
+def _is_dynamic_string_expr(node, source_bytes):
     """True if `node` builds a string dynamically (fmt.Sprintf(...) call,
     or `+` concatenation) rather than being a plain literal -- mirrors
     `python_security._is_dynamic_string_expr`/`js_security`'s version.
     """
     if node.type == "call_expression":
         func = node.child_by_field_name("function")
-        parts = _selector_parts(func, source) if func is not None else None
+        parts = _selector_parts(func, source_bytes) if func is not None else None
         return parts is not None and parts == ("fmt", "Sprintf")
     if node.type == "binary_expression":
         op = node.child_by_field_name("operator")
-        return op is not None and _text(op, source) == "+"
+        return op is not None and _text(op, source_bytes) == "+"
     return False
 
 
@@ -166,19 +170,23 @@ def _query_arg_index(method):
     return 1 if method.endswith("Context") else 0
 
 
-def _sql_injection_issue(node, path, source):
+def _sql_injection_issue(node, path, source_bytes, imports):
     func = node.child_by_field_name("function")
     if func is None:
         return None
-    parts = _selector_parts(func, source)
+    parts = _selector_parts(func, source_bytes)
     if parts is None:
         return None
     _receiver, method = parts
     if method not in _SQL_EXEC_METHODS:
         return None
+    # Only flag if the file imports a recognised SQL/DB package -- prevents
+    # false positives from unrelated types that happen to define .Query() etc.
+    if not any("sql" in p or p == "database/sql" for p in imports):
+        return None
     args = _call_args(node)
     idx = _query_arg_index(method)
-    if len(args) <= idx or not _is_dynamic_string_expr(args[idx], source):
+    if len(args) <= idx or not _is_dynamic_string_expr(args[idx], source_bytes):
         return None
     return Issue(
         path, _line(node), "security", "error", "sql-injection-risk",
@@ -194,12 +202,14 @@ def security_issues(root, path, source, only_lines):
     """Every security-category issue findable from a single AST pass over
     `root` (the parsed tree-sitter root node for a Go file).
     """
+    source_bytes = source.encode("utf-8", errors="replace")
+    imports = _imported_packages(root, source_bytes)
     issues = []
     for node in _iter_kind(root, "call_expression"):
         if not _in_scope(node, only_lines):
             continue
         for check in _CALL_CHECKS:
-            issue = check(node, path, source)
+            issue = check(node, path, source_bytes, imports)
             if issue is not None:
                 issues.append(issue)
     return issues

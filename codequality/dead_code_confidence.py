@@ -38,11 +38,9 @@ list: the dead code that's been sitting untouched longest is the safest
 to look at first.
 """
 
-import os
 import re
 from datetime import datetime, timezone
 
-from codequality.analyzers import dead_code_ast
 from codequality.git_utils import GitError, _run
 from codequality.scanner import scan_repo
 
@@ -95,15 +93,6 @@ def _commit_date(cwd, sha, cache):
     return cache[sha]
 
 
-def _read_source(root, rel_path):
-    full = os.path.join(root, rel_path)
-    try:
-        with open(full, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return None
-
-
 def _extract_name_and_kind(issue):
     """(name, kind) for an Issue from find_dead_code_ast(), where kind is
     "function", "class", or "method". Falls back to (message, "function")
@@ -140,15 +129,17 @@ def compute(root, config, stale_days=DEFAULT_STALE_DAYS):
     report" convention as todo_age.py.
     """
     file_metrics = scan_repo(root, config)
-    file_sources = {}
+
+    # Reuse dead-code issues already computed by scan_repo() (which runs
+    # find_dead_code_ast internally via _apply_dead_code) rather than
+    # running the cross-file AST pass a second time over the same files.
+    issues_by_path = {}
     for fm in file_metrics:
         if fm.language != "python":
             continue
-        source = _read_source(root, fm.path)
-        if source is not None:
-            file_sources[fm.path] = source
-
-    issues_by_path = dead_code_ast.find_dead_code_ast(file_sources)
+        dc_issues = [i for i in fm.issues if i.symbol in ("dead-code", "unused-method")]
+        if dc_issues:
+            issues_by_path[fm.path] = dc_issues
 
     now = datetime.now(timezone.utc)
     date_cache = {}

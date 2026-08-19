@@ -17,7 +17,7 @@ reported at `info` severity.  False negatives are possible for names reached
 only through `getattr`/`__getattr__`, framework dispatch by convention, or
 dynamic attribute construction -- the same caveats as the regex scanner.
 
-Exemptions (identical to `dead_code.py` for top-level, extended for methods):
+Exemptions (shared with `dead_code.py` via import, extended for methods):
 - private names (leading `_`) and dunders
 - test-framework hooks (setUp/tearDown/…) and `test_`-prefixed names
 - pytest/unittest class-discovery prefixes (`Test*`)
@@ -25,6 +25,8 @@ Exemptions (identical to `dead_code.py` for top-level, extended for methods):
 - names listed in a module's `__all__`
 - decorated definitions (framework dispatch via decorator is invisible to
   static analysis)
+- classes whose *class body* carries a decorator (same rationale: any method
+  inside may be dispatched by the class-level framework hook)
 - HTTP-verb method names (`get`, `post`, `put`, `patch`, `delete`, `head`,
   `options`) — these are dispatched by web frameworks, never by direct
   call in application code
@@ -33,50 +35,24 @@ Exemptions (identical to `dead_code.py` for top-level, extended for methods):
 import ast
 
 from codequality.analyzers.base import Issue
-
-_TEST_HOOKS = frozenset({
-    "setUp", "tearDown", "setUpClass", "tearDownClass",
-    "setUpModule", "tearDownModule",
-})
+from codequality.analyzers.dead_code import (
+    _DEF_TYPES,
+    _TEST_HOOKS,
+    _dunder_all_names,
+    _is_dunder,
+    _is_exempt_name as _is_exempt,
+)
 
 _HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
 
-_DEF_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-
-
-def _is_dunder(name):
-    return name.startswith("__") and name.endswith("__")
-
-
-def _is_exempt(name):
-    if _is_dunder(name):
-        return True
-    if name in _TEST_HOOKS:
-        return True
-    if name.startswith("test_") or name.startswith("Test"):
-        return True
-    if name == "main":
-        return True
-    return False
-
-
-def _dunder_all_names(tree):
-    names = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
-            continue
-        if isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
-            names.update(
-                elt.value for elt in node.value.elts
-                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-            )
-    return names
-
 
 def _top_level_candidates(tree):
-    """Public, undecorated, non-exempt module-level function/class definitions."""
+    """Public, undecorated, non-exempt module-level function/class definitions.
+
+    Returns dict[name -> list[node]] so that two same-named top-level defs
+    (a redefinition pattern) are each independently checked for dead-code
+    rather than silently overwriting each other.
+    """
     exported = _dunder_all_names(tree)
     candidates = {}
     for node in tree.body:
@@ -87,18 +63,24 @@ def _top_level_candidates(tree):
             continue
         if node.decorator_list:
             continue
-        candidates[name] = node
+        candidates.setdefault(name, []).append(node)
     return candidates
 
 
 def _method_candidates(tree):
-    """Public, undecorated, non-exempt methods from all class bodies.
+    """Public, undecorated, non-exempt methods from undecorated class bodies.
+
+    A class-level decorator (e.g. @register, @app.route) typically implies
+    framework dispatch of every method inside it, so the entire class is
+    skipped -- same reasoning as the top-level decorator exemption.
 
     Returns dict mapping (class_name, method_name) -> ast node.
     """
     candidates = {}
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
+            continue
+        if node.decorator_list:
             continue
         for item in node.body:
             if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -163,15 +145,16 @@ def find_dead_code_ast(file_sources):
         top_dead = set()
 
         # --- top-level dead code ---
-        for name, node in _top_level_candidates(tree).items():
+        for name, nodes in _top_level_candidates(tree).items():
             if name in name_refs or name in attribute_refs:
                 continue
             top_dead.add(name)
-            kind = "Class" if isinstance(node, ast.ClassDef) else "Function"
-            issues_by_path.setdefault(path, []).append(
-                Issue(path, node.lineno, "correctness", "info", "dead-code",
-                      f"{kind} '{name}' is never referenced in code")
-            )
+            for node in nodes:
+                kind = "Class" if isinstance(node, ast.ClassDef) else "Function"
+                issues_by_path.setdefault(path, []).append(
+                    Issue(path, node.lineno, "correctness", "info", "dead-code",
+                          f"{kind} '{name}' is never referenced in code")
+                )
 
         # --- unused methods ---
         for (class_name, method_name), node in _method_candidates(tree).items():

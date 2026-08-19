@@ -184,6 +184,10 @@ def score_correctness(file_metrics_list):
         "placeholder-comment": 8,
         "deprecated-api": 4,
         "missing-test-file": 3,
+        # info-severity findings from dead_code_ast.py: documented as
+        # score-exempt (heuristic signal, not a hard correctness gate).
+        "dead-code": 0,
+        "unused-method": 0,
     }
     total_loc = sum(fm.loc for fm in file_metrics_list)
     if total_loc == 0:

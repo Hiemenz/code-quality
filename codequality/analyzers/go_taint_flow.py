@@ -30,6 +30,9 @@ a *new* taint binding created inside a case, for use after the switch
 ends.
 """
 
+from codequality.analyzers._ts_helpers import iter_kind as _iter_kind
+from codequality.analyzers._ts_helpers import node_line as _line
+from codequality.analyzers._ts_helpers import node_text as _text
 from codequality.analyzers.base import Issue
 
 _SQL_EXEC_METHODS = {"Query", "QueryContext", "QueryRow", "QueryRowContext", "Exec", "ExecContext"}
@@ -45,34 +48,21 @@ _SOURCE_CALL_EXACT = ("os.Getenv",)
 _SOURCE_SUBSCRIPT_BASES = ("os.Args",)
 
 
-def _text(node, source):
-    """`node`'s source text, going through the UTF-8-encoded bytes since
-    tree-sitter node offsets are *byte* offsets, not str indices (see
-    treesitter_analyzer._node_text for the same fix and why it matters).
-    """
-    encoded = source.encode("utf-8", errors="replace")
-    return encoded[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-
-
-def _line(node):
-    return node.start_point.row + 1
-
-
 def _in_scope(lineno, only_lines):
     return only_lines is None or lineno in only_lines
 
 
-def _selector_text(node, source):
-    return _text(node, source) if node is not None and node.type == "selector_expression" else None
+def _selector_text(node, source_bytes):
+    return _text(node, source_bytes) if node is not None and node.type == "selector_expression" else None
 
 
-def _source_provenance(node, source):
+def _source_provenance(node, source_bytes):
     """Short description of `node` if it's a known untrusted-input
     expression, else None.
     """
     if node.type == "call_expression":
         func = node.child_by_field_name("function")
-        text = _selector_text(func, source)
+        text = _selector_text(func, source_bytes)
         if text is None:
             return None
         if text in _SOURCE_CALL_EXACT or any(text.endswith(suf) for suf in _SOURCE_CALL_SUFFIXES):
@@ -80,40 +70,40 @@ def _source_provenance(node, source):
         return None
     if node.type == "index_expression":
         operand = node.child_by_field_name("operand")
-        text = _selector_text(operand, source)
+        text = _selector_text(operand, source_bytes)
         if text is not None and text in _SOURCE_SUBSCRIPT_BASES:
             return f"{text}[...]"
         return None
     return None
 
 
-def _is_tainted_expr(node, tainted, source):
-    if node.type == "identifier" and _text(node, source) in tainted:
+def _is_tainted_expr(node, tainted, source_bytes):
+    if node.type == "identifier" and _text(node, source_bytes) in tainted:
         return True
     for i in range(node.named_child_count):
-        if _is_tainted_expr(node.named_child(i), tainted, source):
+        if _is_tainted_expr(node.named_child(i), tainted, source_bytes):
             return True
     return False
 
 
-def _first_tainted_name(node, tainted, source):
+def _first_tainted_name(node, tainted, source_bytes):
     if node.type == "identifier":
-        name = _text(node, source)
+        name = _text(node, source_bytes)
         return name if name in tainted else None
     for i in range(node.named_child_count):
-        found = _first_tainted_name(node.named_child(i), tainted, source)
+        found = _first_tainted_name(node.named_child(i), tainted, source_bytes)
         if found is not None:
             return found
     return None
 
 
-def _rhs_provenance(rhs, tainted, source):
-    prov = _source_provenance(rhs, source)
+def _rhs_provenance(rhs, tainted, source_bytes):
+    prov = _source_provenance(rhs, source_bytes)
     if prov is not None:
         return prov
     if rhs.type == "identifier":
-        return tainted.get(_text(rhs, source))
-    name = _first_tainted_name(rhs, tainted, source)
+        return tainted.get(_text(rhs, source_bytes))
+    name = _first_tainted_name(rhs, tainted, source_bytes)
     return tainted.get(name) if name is not None else None
 
 
@@ -127,13 +117,13 @@ def _apply_binding(names, prov, tainted):
             tainted.pop(name, None)
 
 
-def _sink_issue(node, path, tainted, source):
+def _sink_issue(node, path, tainted, source_bytes):
     """`<db/tx>.Query/Exec/...(...)` called with a currently-tainted bare
     identifier as its query-text argument (index 0, or 1 for the
     `...Context` variants -- see go_security._query_arg_index).
     """
     func = node.child_by_field_name("function")
-    text = _selector_text(func, source)
+    text = _selector_text(func, source_bytes)
     if text is None:
         return None
     method = text.rsplit(".", 1)[-1]
@@ -146,7 +136,7 @@ def _sink_issue(node, path, tainted, source):
     arg = args_node.named_child(idx)
     if arg.type != "identifier":
         return None
-    name = _text(arg, source)
+    name = _text(arg, source_bytes)
     if name not in tainted:
         return None
     return Issue(
@@ -156,18 +146,11 @@ def _sink_issue(node, path, tainted, source):
     )
 
 
-def _scan_sinks(expr, tainted, issues, path, source):
+def _scan_sinks(expr, tainted, issues, path, source_bytes):
     for node in _iter_kind(expr, "call_expression"):
-        issue = _sink_issue(node, path, tainted, source)
+        issue = _sink_issue(node, path, tainted, source_bytes)
         if issue is not None:
             issues.append(issue)
-
-
-def _iter_kind(node, kind):
-    if node.type == kind:
-        yield node
-    for i in range(node.named_child_count):
-        yield from _iter_kind(node.named_child(i), kind)
 
 
 def _merge_branches(tainted, *branch_states):
@@ -204,52 +187,65 @@ _LOOP_KINDS = {"for_statement"}
 _FUNCTION_KINDS = {"function_declaration", "method_declaration", "func_literal"}
 
 
-def _walk_binding(stmt, tainted, issues, path, source):
+def _walk_binding(stmt, tainted, issues, path, source_bytes):
     """`:=`/`=` -- both have `left`/`right` `expression_list`s. Go allows
     multi-target assignment (`a, b := f(), g()` or `a, b := f()` for a
     2-return call); when the counts line up 1:1 each target gets its own
-    right-hand provenance, and when there's exactly one right-hand
-    expression for multiple targets (a multi-return call) that one
-    provenance is conservatively applied to every target rather than
-    guessing which return value it corresponds to.
+    right-hand provenance positionally, and when there's exactly one right-
+    hand expression for multiple targets (a multi-return call) that one
+    provenance is conservatively applied to every identifier target rather
+    than guessing which return value it corresponds to.
+
+    Non-identifier LHS targets (index expressions, selector expressions like
+    `x[0]` or `s.Field`) are skipped for binding purposes but do NOT shift
+    the positional pairing with the RHS list -- the comparison is against the
+    full LHS item count, not just the identifier subset.
     """
     left = stmt.child_by_field_name("left")
     right = stmt.child_by_field_name("right")
+    lefts = _expr_list_items(left)
     rights = _expr_list_items(right)
     for value in rights:
-        _scan_sinks(value, tainted, issues, path, source)
-    names = [_text(n, source) for n in _expr_list_items(left) if n.type == "identifier"]
-    if not names:
+        _scan_sinks(value, tainted, issues, path, source_bytes)
+    if not lefts:
         return
-    if len(rights) == len(names):
-        for name, value in zip(names, rights):
-            _apply_binding([name], _rhs_provenance(value, tainted, source), tainted)
+    if len(rights) == len(lefts):
+        # 1:1 positional assignment -- pair each LHS node with its RHS value.
+        for left_node, value in zip(lefts, rights):
+            if left_node.type == "identifier":
+                name = _text(left_node, source_bytes)
+                _apply_binding([name], _rhs_provenance(value, tainted, source_bytes), tainted)
     elif len(rights) == 1:
-        _apply_binding(names, _rhs_provenance(rights[0], tainted, source), tainted)
+        # Multi-return call: one RHS maps to all LHS targets.
+        prov = _rhs_provenance(rights[0], tainted, source_bytes)
+        for left_node in lefts:
+            if left_node.type == "identifier":
+                name = _text(left_node, source_bytes)
+                _apply_binding([name], prov, tainted)
 
 
-def _walk_stmt(stmt, tainted, issues, path, source):
+def _walk_stmt(stmt, tainted, issues, path, source_bytes):
     kind = stmt.type
 
     if kind in _BINDING_KINDS:
-        _walk_binding(stmt, tainted, issues, path, source)
+        _walk_binding(stmt, tainted, issues, path, source_bytes)
         return
 
     if kind == "if_statement":
         cond = stmt.child_by_field_name("condition")
         if cond is not None:
-            _scan_sinks(cond, tainted, issues, path, source)
+            _scan_sinks(cond, tainted, issues, path, source_bytes)
         then_state, else_state = dict(tainted), dict(tainted)
         consequence = stmt.child_by_field_name("consequence")
         for s in _block_stmts(consequence):
-            _walk_stmt(s, then_state, issues, path, source)
+            _walk_stmt(s, then_state, issues, path, source_bytes)
         alternative = stmt.child_by_field_name("alternative")
         if alternative is not None:
             if alternative.type == "if_statement":
-                _walk_stmt(alternative, else_state, issues, path, source)
+                _walk_stmt(alternative, else_state, issues, path, source_bytes)
             else:
                 for s in _block_stmts(alternative):
-                    _walk_stmt(s, else_state, issues, path, source)
+                    _walk_stmt(s, else_state, issues, path, source_bytes)
         _merge_branches(tainted, then_state, else_state)
         return
 
@@ -259,18 +255,18 @@ def _walk_stmt(stmt, tainted, issues, path, source):
         if clause is not None and clause.type == "for_clause":
             initializer = clause.child_by_field_name("initializer")
             if initializer is not None:
-                _walk_stmt(initializer, tainted, issues, path, source)
+                _walk_stmt(initializer, tainted, issues, path, source_bytes)
             for field in ("condition", "update"):
                 part = clause.child_by_field_name(field)
                 if part is not None:
-                    _scan_sinks(part, tainted, issues, path, source)
+                    _scan_sinks(part, tainted, issues, path, source_bytes)
         elif clause is not None and clause.type == "range_clause":
             iterable = clause.child_by_field_name("right")
             if iterable is not None:
-                _scan_sinks(iterable, tainted, issues, path, source)
+                _scan_sinks(iterable, tainted, issues, path, source_bytes)
         pre_state, body_state = dict(tainted), dict(tainted)
         for s in _block_stmts(stmt.child_by_field_name("body")):
-            _walk_stmt(s, body_state, issues, path, source)
+            _walk_stmt(s, body_state, issues, path, source_bytes)
         _merge_branches(tainted, body_state, pre_state)  # loop may run 0 or more times
         return
 
@@ -279,10 +275,10 @@ def _walk_stmt(stmt, tainted, issues, path, source):
 
     if kind == "return_statement":
         for value in _expr_list_items(stmt.named_child(0) if stmt.named_child_count else None):
-            _scan_sinks(value, tainted, issues, path, source)
+            _scan_sinks(value, tainted, issues, path, source_bytes)
         return
 
-    _scan_sinks(stmt, tainted, issues, path, source)
+    _scan_sinks(stmt, tainted, issues, path, source_bytes)
 
 
 def taint_issues(root, path, source, only_lines):
@@ -290,12 +286,13 @@ def taint_issues(root, path, source, only_lines):
     analysis pass per function/method/func-literal, each starting with no
     tainted names.
     """
+    source_bytes = source.encode("utf-8", errors="replace")
     issues = []
     for kind in _FUNCTION_KINDS:
         for fn in _iter_kind(root, kind):
             local_issues = []
             tainted = {}
             for s in _block_stmts(fn.child_by_field_name("body")):
-                _walk_stmt(s, tainted, local_issues, path, source)
+                _walk_stmt(s, tainted, local_issues, path, source_bytes)
             issues.extend(local_issues)
     return [i for i in issues if _in_scope(i.line, only_lines)]

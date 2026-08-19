@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -241,30 +242,39 @@ def main() -> None:
         tmp_dir = tempfile.mkdtemp(prefix="cq_scan_")
         workdir = Path(tmp_dir)
 
-    results = []
-    for repo in args.repos:
-        print(f"\n[{repo}]")
+    def _process_repo(repo):
         if Path(repo).exists():
             repo_path = Path(repo)
             name = repo_path.name
         else:
+            print(f"\n[{repo}]")
             repo_path = clone_or_update(repo, workdir)
             name = repo
-
-        print(f"  [scan] {repo_path}")
+        print(f"\n[{repo}]  [scan] {repo_path}")
         data = scan(repo_path)
         if not data:
-            print(f"  [skip] no usable output")
-            continue
-
-        results.append({
+            print(f"  [skip] no usable output for {repo}")
+            return None
+        return {
             "name": name,
             "path": str(repo_path),
             "overall": data.get("overall", {}),
             "summary": data.get("summary", {}),
             "rule_hits": rule_hits(data),
             "severity_hits": severity_hits(data),
-        })
+        }
+
+    results = []
+    with ThreadPoolExecutor(max_workers=len(args.repos)) as pool:
+        futures = {pool.submit(_process_repo, repo): repo for repo in args.repos}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                results.append(result)
+
+    # Restore deterministic order matching the original repo list.
+    repo_order = {repo: i for i, repo in enumerate(args.repos)}
+    results.sort(key=lambda r: repo_order.get(r["name"], repo_order.get(r["path"], 999)))
 
     if not results:
         print("No results to report.")

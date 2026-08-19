@@ -739,9 +739,10 @@ def _add_suppression_debt_subparser(sub):
 def _add_fix_subparser(sub):
     fix_p = sub.add_parser(
         "fix",
-        help="Auto-fix the deterministic style rules that have a single correct rewrite "
+        help="Auto-fix the deterministic style/correctness rules that have a single correct rewrite "
              "(trailing-whitespace, f-string-no-placeholder, comparison-to-none/true, redundant-else, "
-             "bare-except, tab-indent, unused-import)"
+             "bare-except, tab-indent, unused-import, mutable-default-arg, lost-exception-context, "
+             "unsafe-yaml-load, future-import-order)"
     )
     fix_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to fix (default: .)")
     fix_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
@@ -755,7 +756,8 @@ def _add_fix_subparser(sub):
         "--rules", metavar="RULE",
         help="Comma-separated list of rules to fix (default: all fixable rules). "
              "Choices: trailing-whitespace, f-string-no-placeholder, comparison-to-none, "
-             "comparison-to-true, redundant-else, bare-except, tab-indent, unused-import",
+             "comparison-to-true, redundant-else, bare-except, tab-indent, unused-import, "
+             "mutable-default-arg, lost-exception-context, unsafe-yaml-load, future-import-order",
     )
 
 

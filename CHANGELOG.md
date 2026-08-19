@@ -8,6 +8,19 @@ project follows semantic versioning.
 
 ### Added
 
+- `codequality fix` gains four AST-guided rules — twelve total, up from
+  eight. Unlike the existing line-edit rules, these parse the file once
+  and splice at exact node offsets, so a lookalike inside a string
+  literal or comment can never be rewritten: `mutable-default-arg`
+  (`def f(x=[])` → `def f(x=None)` plus an `if x is None: x = []` guard
+  at the top of the body, after the docstring if there is one),
+  `lost-exception-context` (append ` from err` to a raise that discards
+  its handler's exception), `unsafe-yaml-load` (`yaml.load(x)` /
+  `yaml.load(x, Loader=...)` → `yaml.safe_load(x)`), and
+  `future-import-order` (move a misplaced `from __future__ import ...`
+  above the other imports). A file with no AST-rule issues is never
+  parsed, and one that doesn't parse skips only its AST-rule issues —
+  its text-level fixes still apply.
 - Go gets the same real security detection JavaScript/TypeScript has
   (with the `treesitter` extra installed): `weak-hash` for
   `crypto/md5`/`crypto/sha1`, `shell-true` for `exec.Command`/

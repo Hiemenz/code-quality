@@ -311,8 +311,8 @@ penalties.
 
 ## Fixer
 
-`fixer.py` implements eight rules with a single, unambiguous correct
-rewrite:
+`fixer.py` implements twelve rules with a single, unambiguous correct
+rewrite. Eight are text-level — the fix is a pure line edit:
 
 | Rule | Transform |
 |---|---|
@@ -325,11 +325,32 @@ rewrite:
 | `tab-indent` | Expand tabs found in a line's *leading* whitespace to 4 spaces (tabs elsewhere on the line are left alone) |
 | `unused-import` | Delete a top-level (zero-indent), single-name `import`/`from ... import` statement |
 
-The engine processes issues bottom-to-top within each file so that the
-`redundant-else`/`unused-import` line removals don't shift the line
-numbers of earlier issues. Files are read and written with `newline=""`
-to preserve CRLF endings. `--dry-run` produces a unified diff without
-writing any files.
+Four are AST-guided: the file is parsed once into an `_AstContext`, and
+each rewrite is a splice at exact node offsets, so a lookalike inside a
+string literal or comment can never be hit.
+
+| Rule | Transform |
+|---|---|
+| `mutable-default-arg` | `def f(x=[])` → `def f(x=None)` plus an `if x is None: x = []` guard at the top of the body (after the docstring, if any) |
+| `lost-exception-context` | `raise NewError(...)` inside `except ... as err` → `raise NewError(...) from err` |
+| `unsafe-yaml-load` | `yaml.load(x)` / `yaml.load(x, Loader=...)` → `yaml.safe_load(x)` |
+| `future-import-order` | Move a misplaced `from __future__ import ...` above the other imports (just below the module docstring) |
+
+The engine processes issues bottom-to-top within each file so that line
+removals and insertions don't shift the line numbers of earlier issues.
+Two invariants make that hold: a deleted line becomes a `None` slot
+rather than being popped, and inserted lines go into a separate
+`Pending` before/after map keyed by slot index. Every AST fix also
+re-reads the span it is about to replace and compares it to what the AST
+parsed there, so a text fix that already touched the same line causes a
+skip rather than a corrupted rewrite.
+
+`ast` column offsets are UTF-8 *byte* offsets, not character indices, so
+splices round-trip through `bytes`. Files are read and written with
+`newline=""` to preserve CRLF endings. `--dry-run` produces a unified
+diff without writing any files. A file with no AST-rule issues is never
+parsed; one that fails to parse skips only its AST-rule issues (with the
+syntax error as the skip reason) and still gets its text-level fixes.
 
 ---
 

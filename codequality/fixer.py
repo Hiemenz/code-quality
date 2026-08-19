@@ -1,7 +1,7 @@
-"""Auto-fix engine for the eight deterministic style/correctness rules with a
+"""Auto-fix engine for the twelve deterministic style/correctness rules with a
 single correct rewrite.
 
-Rules handled (pure text or simple line-count manipulation, no LLM, no network):
+Text-level rules (pure line manipulation, no parsing):
   trailing-whitespace      -- strip trailing whitespace from the flagged line
   f-string-no-placeholder  -- remove the leading f/F prefix from the string literal
   comparison-to-none       -- == None → is None,  != None → is not None
@@ -11,9 +11,23 @@ Rules handled (pure text or simple line-count manipulation, no LLM, no network):
   tab-indent               -- expand leading tabs to 4 spaces
   unused-import            -- delete a top-level, single-name import statement
 
-Fixes are applied bottom-to-top within each file so that line-number shifts from
-redundant-else/unused-import (which remove a line) do not invalidate earlier
-issue line numbers.
+AST-guided rules (the file is parsed once, and each rewrite is a splice at
+exact node offsets -- so a match inside a string literal or comment can never
+be hit):
+  mutable-default-arg      -- def f(x=[]) → def f(x=None) plus an `if x is None:`
+                              guard at the top of the body
+  lost-exception-context   -- raise NewError(...) → raise NewError(...) from err
+  unsafe-yaml-load         -- yaml.load(x[, Loader=...]) → yaml.safe_load(x)
+  future-import-order      -- move `from __future__ import ...` above the other
+                              imports (just after the module docstring)
+
+No LLM, no network: every rewrite is derived from the source text alone.
+
+Fixes are applied bottom-to-top within each file so that line-number shifts
+from rules that delete or insert lines do not invalidate earlier issue line
+numbers. Deletions blank a slot in the line list rather than removing it, and
+insertions go into a separate before/after map, so every issue's line number
+keeps indexing the slot the AST said it would.
 
 Limitations, all deliberately conservative -- see --dry-run to review changes
 before writing:
@@ -28,8 +42,18 @@ before writing:
   try/if/function body, and deleting it would leave an empty, invalid suite
   -- and (b) bind exactly one name -- `import a, b` where only `b` is unused
   is skipped rather than guessing which comma-separated segment to remove.
+- mutable-default-arg skips one-line defs (`def f(x=[]): return x`) and
+  defaults that span more than one line, because both need a rewrite of the
+  surrounding layout rather than a splice. On an annotated parameter it
+  produces `def f(x: list = None)`, which a strict type checker will want
+  widened to `Optional[list]` by hand -- the runtime bug is fixed either way.
+- unsafe-yaml-load only rewrites a single-argument `yaml.load(...)` call that
+  fits on one line; anything with extra positional args or non-`Loader`
+  keywords is left alone rather than guessing which arguments `safe_load`
+  should keep.
 """
 
+import ast
 import difflib
 import re
 from dataclasses import dataclass, field
@@ -45,6 +69,19 @@ FIXABLE_RULES = frozenset({
     "bare-except",
     "tab-indent",
     "unused-import",
+    "mutable-default-arg",
+    "lost-exception-context",
+    "unsafe-yaml-load",
+    "future-import-order",
+})
+
+#: Rules whose fix needs the file's AST. If the file doesn't parse, these are
+#: skipped (the text-level rules still apply).
+AST_RULES = frozenset({
+    "mutable-default-arg",
+    "lost-exception-context",
+    "unsafe-yaml-load",
+    "future-import-order",
 })
 
 
@@ -59,6 +96,33 @@ class SkippedFix:
     lineno: int
     rule: str
     reason: str
+
+
+@dataclass
+class Pending:
+    """Lines to splice in around an existing line slot.
+
+    Insertions are held here rather than pushed into the line list so that a
+    slot's index keeps matching the line number the AST reported, no matter how
+    many lines earlier fixes added.
+    """
+    before: dict = field(default_factory=dict)
+    after: dict = field(default_factory=dict)
+
+    def insert_before(self, idx, text):
+        self.before.setdefault(idx, []).append(text)
+
+    def insert_after(self, idx, text):
+        self.after.setdefault(idx, []).append(text)
+
+    def assemble(self, lines):
+        out = []
+        for idx, line in enumerate(lines):
+            out.extend(self.before.get(idx, ()))
+            if line is not None:
+                out.append(line)
+            out.extend(self.after.get(idx, ()))
+        return "".join(out)
 
 
 @dataclass
@@ -329,6 +393,326 @@ def _fix_unused_import(lines, lineno):
 
 
 # ---------------------------------------------------------------------------
+# AST-guided fixes
+#
+# `ast` column offsets are UTF-8 *byte* offsets, not character indices, so
+# every splice round-trips through bytes. Before writing, each fix re-reads the
+# span it is about to replace and compares it to what the AST said was there;
+# if an earlier fix on the same line already moved things, the span won't match
+# and the fix is skipped instead of corrupting the line.
+# ---------------------------------------------------------------------------
+
+class _AstContext:
+    """Parsed view of a file, shared by every AST-guided fix on it."""
+
+    def __init__(self, source):
+        self.source = source
+        self.tree = ast.parse(source)
+        self._functions = {}          # def lineno    -> FunctionDef
+        self._raises = {}             # raise lineno  -> (handler name, Raise)
+        self._yaml_loads = {}         # call lineno   -> Call
+        self._future_imports = {}     # import lineno -> ImportFrom
+        self._index()
+
+    def _index(self):
+        # ast.walk is breadth-first, so an outer `except ... as e` is seen
+        # before a handler nested inside it. Assigning (rather than
+        # setdefault-ing) therefore lets the innermost handler -- the one whose
+        # name is actually the right thing to chain from -- win.
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._functions.setdefault(node.lineno, node)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                for raise_node in _raises_in_scope(node):
+                    self._raises[raise_node.lineno] = (node.name, raise_node)
+            elif isinstance(node, ast.Call) and _call_dotted_name(node.func) == "yaml.load":
+                self._yaml_loads.setdefault(node.lineno, node)
+            elif isinstance(node, ast.ImportFrom) and node.module == "__future__" and not node.level:
+                self._future_imports.setdefault(node.lineno, node)
+
+    def function_at(self, lineno):
+        return self._functions.get(lineno)
+
+    def unchained_raise_at(self, lineno):
+        return self._raises.get(lineno)
+
+    def yaml_load_at(self, lineno):
+        return self._yaml_loads.get(lineno)
+
+    def future_import_at(self, lineno):
+        return self._future_imports.get(lineno)
+
+    def segment(self, node):
+        return ast.get_source_segment(self.source, node)
+
+    def first_module_stmt_after_docstring(self, skip):
+        """The module-level statement that `skip` should be moved above, or None.
+
+        Returns the line the statement's source starts on, which is the first
+        decorator line for a decorated def -- inserting between a decorator and
+        its def would be a syntax error.
+        """
+        seen_docstring = False
+        for node in ast.iter_child_nodes(self.tree):
+            if node is skip:
+                continue
+            if (not seen_docstring and isinstance(node, ast.Expr)
+                    and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+                seen_docstring = True
+                continue
+            return min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+        return None
+
+
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _raises_in_scope(handler):
+    """Unchained `raise X` statements directly inside `handler`'s body.
+
+    Nested function/class bodies are not descended into: the handler's bound
+    exception name isn't in scope there, so `raise ... from err` would be a
+    NameError. This mirrors what the lost-exception-context check itself walks.
+    """
+    found = []
+
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _NESTED_SCOPES):
+                continue
+            if isinstance(child, ast.Raise) and child.exc is not None and child.cause is None:
+                found.append(child)
+            visit(child)
+
+    visit(handler)
+    return found
+
+
+def _call_dotted_name(node):
+    """Dotted source name of a call target (`yaml.load`), or None if it isn't
+    a plain name/attribute chain."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _byte_span(line, start_col, end_col):
+    """The [start_col, end_col) byte range of `line`, decoded back to text."""
+    return line.encode("utf-8")[start_col:end_col].decode("utf-8")
+
+
+def _splice(line, start_col, end_col, replacement):
+    """`line` with its [start_col, end_col) byte range replaced by `replacement`."""
+    raw = line.encode("utf-8")
+    return raw[:start_col].decode("utf-8") + replacement + raw[end_col:].decode("utf-8")
+
+
+def _line_ending(line):
+    for eol in ("\r\n", "\n", "\r"):
+        if line.endswith(eol):
+            return eol
+    return "\n"
+
+
+def _splice_node(lines, node, replacement, ctx):
+    """Replace a single-line node's source span with `replacement`.
+
+    False if the node spans lines, its slot is gone, or the text sitting at the
+    node's offsets is no longer what the AST parsed.
+    """
+    if node.lineno != node.end_lineno:
+        return False
+    idx = node.lineno - 1
+    if idx >= len(lines) or lines[idx] is None:
+        return False
+    expected = ctx.segment(node)
+    if expected is None or _byte_span(lines[idx], node.col_offset, node.end_col_offset) != expected:
+        return False
+    lines[idx] = _splice(lines[idx], node.col_offset, node.end_col_offset, replacement)
+    return True
+
+
+_MUTABLE_LITERALS = (ast.List, ast.Dict, ast.Set)
+
+
+def _mutable_defaults(fn):
+    """[(param name, default node)] for every mutable-literal default, in
+    declaration order."""
+    out = []
+    positional = list(fn.args.posonlyargs) + list(fn.args.args)
+    defaults = list(fn.args.defaults)
+    if defaults:
+        for arg, default in zip(positional[len(positional) - len(defaults):], defaults):
+            if isinstance(default, _MUTABLE_LITERALS):
+                out.append((arg.arg, default))
+    for arg, default in zip(fn.args.kwonlyargs, fn.args.kw_defaults):
+        if default is not None and isinstance(default, _MUTABLE_LITERALS):
+            out.append((arg.arg, default))
+    return out
+
+
+def _fix_mutable_default_arg(lines, lineno, ctx, pending):
+    """`def f(x=[])` → `def f(x=None)` plus an `if x is None: x = []` guard.
+
+    The guard goes at the very top of the body (after the docstring, if there
+    is one), which preserves the original semantics for every caller that
+    passes the argument and fixes the shared-state bug for every caller that
+    doesn't.
+    """
+    fn = ctx.function_at(lineno)
+    if fn is None:
+        return False, "no function definition starts on this line"
+    targets = _mutable_defaults(fn)
+    if not targets:
+        return False, "no mutable-literal default in the signature"
+    if any(d.lineno != d.end_lineno for _, d in targets):
+        return False, "default value spans multiple lines; rewrite it by hand"
+
+    first = fn.body[0]
+    body_idx = first.lineno - 1
+    if body_idx >= len(lines) or lines[body_idx] is None:
+        return False, "function body line not found"
+    body_prefix = _byte_span(lines[body_idx], 0, first.col_offset)
+    if body_prefix.strip():
+        return False, "one-line def; put the body on its own line first"
+
+    def_line = lines[fn.lineno - 1]
+    if def_line is None:
+        return False, "def line not found"
+    def_indent = _LEADING_WS_RE.match(def_line).group(0)
+    step = body_prefix[len(def_indent):] or "    "
+
+    # Rewrite the defaults right-to-left within each line so that splicing one
+    # doesn't shift the offsets of the ones before it.
+    for _, default in sorted(targets, key=lambda t: (t[1].lineno, t[1].col_offset), reverse=True):
+        if not _splice_node(lines, default, "None", ctx):
+            return False, "signature no longer matches what was parsed"
+
+    is_docstring = (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str))
+    anchor_idx = (first.end_lineno - 1) if is_docstring else body_idx
+    eol = _line_ending(lines[anchor_idx] or lines[body_idx])
+
+    guard = "".join(
+        f"{body_prefix}if {name} is None:{eol}{body_prefix}{step}{name} = {ctx.segment(default)}{eol}"
+        for name, default in targets
+    )
+    if is_docstring:
+        pending.insert_after(anchor_idx, guard)
+    else:
+        pending.insert_before(anchor_idx, guard)
+    return True, None
+
+
+def _fix_lost_exception_context(lines, lineno, ctx, _pending):
+    """Append ` from <err>` to a raise that discards the handler's exception."""
+    found = ctx.unchained_raise_at(lineno)
+    if found is None:
+        return False, "no unchained raise starts on this line"
+    name, raise_node = found
+    idx = raise_node.end_lineno - 1
+    if idx >= len(lines) or lines[idx] is None:
+        return False, "raise statement line not found"
+    segment = ctx.segment(raise_node)
+    if segment is None:
+        return False, "could not read the raise statement's source"
+    tail = segment.splitlines()[-1]
+    if not lines[idx].encode("utf-8")[:raise_node.end_col_offset].endswith(tail.encode("utf-8")):
+        return False, "raise statement no longer matches what was parsed"
+    lines[idx] = _splice(lines[idx], raise_node.end_col_offset, raise_node.end_col_offset, f" from {name}")
+    return True, None
+
+
+def _fix_unsafe_yaml_load(lines, lineno, ctx, _pending):
+    """`yaml.load(x)` / `yaml.load(x, Loader=...)` → `yaml.safe_load(x)`."""
+    call = ctx.yaml_load_at(lineno)
+    if call is None:
+        return False, "no yaml.load() call starts on this line"
+    if len(call.args) != 1 or isinstance(call.args[0], ast.Starred):
+        return False, "call doesn't take exactly one positional argument"
+    if any(kw.arg != "Loader" for kw in call.keywords):
+        return False, "call passes keywords other than Loader; rewrite it by hand"
+    func_src = ctx.segment(call.func)
+    arg_src = ctx.segment(call.args[0])
+    if func_src is None or arg_src is None or not func_src.endswith("load"):
+        return False, "could not read the call's source"
+    replacement = f"{func_src[:-len('load')]}safe_load({arg_src})"
+    if not _splice_node(lines, call, replacement, ctx):
+        return False, "call spans multiple lines or no longer matches what was parsed"
+    return True, None
+
+
+def _fix_future_import_order(lines, lineno, ctx, pending):
+    """Move a misplaced `from __future__ import ...` above the other imports."""
+    node = ctx.future_import_at(lineno)
+    if node is None:
+        return False, "no __future__ import starts on this line"
+    if node.lineno != node.end_lineno:
+        return False, "import spans multiple lines; move it by hand"
+    idx = node.lineno - 1
+    if idx >= len(lines) or lines[idx] is None:
+        return False, "import line not found"
+    if node.col_offset != 0:
+        return False, "import is indented, so it isn't at module scope"
+    target_lineno = ctx.first_module_stmt_after_docstring(node)
+    if target_lineno is None or target_lineno >= node.lineno:
+        return False, "no earlier module-level statement to move the import above"
+    target_idx = target_lineno - 1
+    if lines[target_idx] is None:
+        return False, "destination line was removed by another fix"
+
+    moved = lines[idx]
+    if not moved.endswith(("\n", "\r")):
+        moved += _line_ending(lines[target_idx])
+    lines[idx] = None
+    pending.insert_before(target_idx, moved)
+    return True, None
+
+
+# ---------------------------------------------------------------------------
+# Dispatch table
+#
+# Every entry is normalized to (lines, lineno, ctx, pending) -> (ok, reason) so
+# the driver doesn't need to know which rules parse and which don't.
+# ---------------------------------------------------------------------------
+
+def _plain(fn, default_reason):
+    """Adapt a text-level fix returning a bare bool."""
+    def run(lines, lineno, _ctx, _pending):
+        return (True, None) if fn(lines, lineno) else (False, default_reason)
+    return run
+
+
+def _with_reason(fn, default_reason):
+    """Adapt a text-level fix that already explains its own refusals."""
+    def run(lines, lineno, _ctx, _pending):
+        ok, reason = fn(lines, lineno)
+        return ok, (None if ok else (reason or default_reason))
+    return run
+
+
+_FIXES = {
+    "trailing-whitespace": _plain(_fix_trailing_whitespace, "line not found"),
+    "f-string-no-placeholder": _plain(_fix_fstring_no_placeholder, "f-string prefix not found on line"),
+    "comparison-to-none": _plain(_fix_comparison_to_none, "pattern not found on line"),
+    "comparison-to-true": _with_reason(_fix_comparison_to_true, "pattern not found on line"),
+    "redundant-else": _plain(_fix_redundant_else, "else: line not found"),
+    "bare-except": _plain(_fix_bare_except, "bare 'except:' not found on line"),
+    "tab-indent": _plain(_fix_tab_indent, "no tab in leading indentation (tab may be inside a string/comment)"),
+    "unused-import": _with_reason(_fix_unused_import, "could not fix"),
+    "mutable-default-arg": _fix_mutable_default_arg,
+    "lost-exception-context": _fix_lost_exception_context,
+    "unsafe-yaml-load": _fix_unsafe_yaml_load,
+    "future-import-order": _fix_future_import_order,
+}
+
+
+# ---------------------------------------------------------------------------
 # File-level fix driver
 # ---------------------------------------------------------------------------
 
@@ -348,69 +732,37 @@ def _fix_file(abs_path, root, issues, dry_run=False):
     result.original_text = original
 
     lines = original.splitlines(keepends=True)
-    # Ensure last line has a newline in the list for consistent indexing.
-    if lines and not lines[-1].endswith(("\n", "\r")):
-        pass  # keep as-is
+    pending = Pending()
 
-    # Process issues bottom-to-top so that redundant-else line removal
-    # does not shift the line numbers of earlier issues in the same file.
+    ctx, ctx_error = None, None
+    if any(iss["symbol"] in AST_RULES for iss in issues):
+        try:
+            ctx = _AstContext(original)
+        except SyntaxError as exc:
+            ctx_error = f"file doesn't parse ({exc.msg}); AST-guided fixes skipped"
+
+    # Process issues bottom-to-top so that line removals/insertions from one
+    # fix do not shift the line numbers of issues earlier in the same file.
     sorted_issues = sorted(issues, key=lambda i: i["line"], reverse=True)
 
     for iss in sorted_issues:
         rule = iss["symbol"]
         lineno = iss["line"]
 
-        if rule == "trailing-whitespace":
-            ok = _fix_trailing_whitespace(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "line not found")
-            )
+        fix = _FIXES.get(rule)
+        if fix is None:
+            continue
+        if rule in AST_RULES and ctx is None:
+            result.skipped.append(SkippedFix(lineno, rule, ctx_error or "file could not be parsed"))
+            continue
 
-        elif rule == "f-string-no-placeholder":
-            ok = _fix_fstring_no_placeholder(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "f-string prefix not found on line")
-            )
+        ok, reason = fix(lines, lineno, ctx, pending)
+        if ok:
+            result.applied.append(AppliedFix(lineno, rule))
+        else:
+            result.skipped.append(SkippedFix(lineno, rule, reason or "could not fix"))
 
-        elif rule == "comparison-to-none":
-            ok = _fix_comparison_to_none(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "pattern not found on line")
-            )
-
-        elif rule == "comparison-to-true":
-            ok, reason = _fix_comparison_to_true(lines, lineno)
-            if ok:
-                result.applied.append(AppliedFix(lineno, rule))
-            else:
-                result.skipped.append(SkippedFix(lineno, rule, reason or "pattern not found on line"))
-
-        elif rule == "redundant-else":
-            ok = _fix_redundant_else(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "else: line not found")
-            )
-
-        elif rule == "bare-except":
-            ok = _fix_bare_except(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, "bare 'except:' not found on line")
-            )
-
-        elif rule == "tab-indent":
-            ok = _fix_tab_indent(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else
-                SkippedFix(lineno, rule, "no tab in leading indentation (tab may be inside a string/comment)")
-            )
-
-        elif rule == "unused-import":
-            ok, reason = _fix_unused_import(lines, lineno)
-            (result.applied if ok else result.skipped).append(
-                AppliedFix(lineno, rule) if ok else SkippedFix(lineno, rule, reason or "could not fix")
-            )
-
-    new_text = "".join(line for line in lines if line is not None)
+    new_text = pending.assemble(lines)
     result.new_text = new_text
 
     if not dry_run and result.changed:

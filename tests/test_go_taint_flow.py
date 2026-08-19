@@ -137,6 +137,34 @@ class TestPropagation(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].line, 5)
 
+    def test_multi_target_assignment_with_non_identifier_lhs(self):
+        # x[0], q = "a", r.FormValue("id") -- the non-identifier LHS (x[0])
+        # must not shift the positional pairing; q must still become tainted.
+        src = _PREAMBLE + (
+            "func h(r *http.Request, db *sql.DB, x []string) {\n"
+            '\tx[0], q := "a", r.FormValue("id")\n'
+            "\tdb.Query(q)\n"
+            "}\n"
+        )
+        self.assertEqual(len(_issues(src)), 1)
+
+    def test_multi_return_function_taints_all_targets(self):
+        # a, b, err := multiReturnFunc() where multiReturnFunc returns tainted data.
+        # With one RHS expression the provenance is applied to all identifier targets.
+        src = _PREAMBLE + (
+            "func getID(r *http.Request) (string, string) {\n"
+            '\treturn r.FormValue("a"), r.FormValue("b")\n'
+            "}\n"
+            "func h(r *http.Request, db *sql.DB) {\n"
+            "\ta, b := getID(r)\n"
+            "\tdb.Query(a)\n"
+            "\tdb.Query(b)\n"
+            "}\n"
+        )
+        # Both a and b are conservatively tainted from the single call RHS.
+        issues = _issues(src)
+        self.assertEqual(len(issues), 2)
+
     def test_reassignment_to_literal_clears_taint(self):
         src = _PREAMBLE + (
             "func h(r *http.Request, db *sql.DB) {\n"

@@ -740,7 +740,8 @@ def _add_fix_subparser(sub):
     fix_p = sub.add_parser(
         "fix",
         help="Auto-fix the deterministic style rules that have a single correct rewrite "
-             "(trailing-whitespace, f-string-no-placeholder, comparison-to-none/true, redundant-else)"
+             "(trailing-whitespace, f-string-no-placeholder, comparison-to-none/true, redundant-else, "
+             "bare-except, tab-indent, unused-import)"
     )
     fix_p.add_argument("path", nargs="?", default=".", help="Repo/directory root to fix (default: .)")
     fix_p.add_argument("--config", help="Path to a .codequality.toml/.json config file")
@@ -754,7 +755,7 @@ def _add_fix_subparser(sub):
         "--rules", metavar="RULE",
         help="Comma-separated list of rules to fix (default: all fixable rules). "
              "Choices: trailing-whitespace, f-string-no-placeholder, comparison-to-none, "
-             "comparison-to-true, redundant-else",
+             "comparison-to-true, redundant-else, bare-except, tab-indent, unused-import",
     )
 
 
@@ -1619,8 +1620,9 @@ def cmd_ai_report(args):
 
 def cmd_dead_code_confidence(args):
     """Handle `codequality dead-code-confidence`: age every cross-file
-    dead-code finding (see codequality/analyzers/dead_code.py) via git
-    blame, and label how safe each looks to remove.
+    dead-code/unused-method finding (see
+    codequality/analyzers/dead_code_ast.py) via git blame, and label how
+    safe each looks to remove.
     """
     root = os.path.abspath(args.path)
     if not is_git_repo(root):

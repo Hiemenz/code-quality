@@ -141,6 +141,53 @@ class TestDeadCodeConfidence(unittest.TestCase):
         self.assertEqual(results[1]["name"], "new_dead")
         self.assertGreaterEqual(results[0]["age_days"], results[1]["age_days"])
 
+    def test_old_unused_method_gets_high_confidence(self):
+        # Foo itself must be referenced elsewhere, or the class is flagged
+        # dead-code and the method finding is suppressed as cascading noise
+        # (see analyzers/dead_code_ast.py).
+        old_date = _git_date(datetime.now(timezone.utc) - timedelta(days=400))
+        _commit(
+            self.repo, "a.py",
+            "class Foo:\n    def orphan_method(self):\n        pass\n",
+            "human add", author_date=old_date,
+        )
+        _commit(
+            self.repo, "b.py",
+            "from a import Foo\nFoo()\n",
+            "human add caller", author_date=old_date,
+        )
+
+        results = dead_code_confidence.compute(self.repo, self.config, stale_days=180)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["name"], "Foo.orphan_method")
+        self.assertEqual(results[0]["kind"], "method")
+        self.assertEqual(results[0]["confidence"], "high")
+
+    def test_method_called_elsewhere_does_not_appear(self):
+        _commit(
+            self.repo, "a.py",
+            "class Foo:\n    def process(self):\n        pass\n",
+            "human add",
+        )
+        _commit(
+            self.repo, "b.py",
+            "from a import Foo\nFoo().process()\n",
+            "human add caller",
+        )
+
+        results = dead_code_confidence.compute(self.repo, self.config, stale_days=180)
+        self.assertEqual(results, [])
+
+    def test_function_finding_has_kind_function(self):
+        _commit(
+            self.repo, "a.py",
+            "def never_called():\n    return 1\n",
+            "human add",
+        )
+
+        results = dead_code_confidence.compute(self.repo, self.config, stale_days=180)
+        self.assertEqual(results[0]["kind"], "function")
+
     def test_render_text_lists_findings(self):
         old_date = _git_date(datetime.now(timezone.utc) - timedelta(days=400))
         _commit(

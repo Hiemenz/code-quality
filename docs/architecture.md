@@ -62,7 +62,7 @@ codequality/
 ├── git_utils.py             Thin wrappers around git CLI calls
 ├── history.py               --record-history JSONL append/read
 ├── baseline.py              Baseline snapshot + forgiveness logic
-├── fixer.py                 In-place auto-fix engine (5 rules)
+├── fixer.py                 In-place auto-fix engine (8 rules)
 ├── report_compare.py        compare subcommand: delta between two JSON reports
 ├── annotation_coverage.py   annotation-coverage subcommand
 ├── suppression_debt.py      suppression-debt subcommand (git blame aging)
@@ -93,7 +93,8 @@ codequality/
 │   ├── scope_check.py       scope-mismatch (diff mode only)
 │   ├── duplication.py       6-line sliding-window hash (cross-file)
 │   ├── circular_imports.py  import-cycle detection (cross-file)
-│   ├── dead_code.py         Cross-file unreferenced top-level names
+│   ├── dead_code.py         Cross-file unreferenced top-level names (regex refs; used by dead-code-confidence)
+│   ├── dead_code_ast.py     Cross-file unreferenced top-level names + methods (AST refs; wired into scan/diff)
 │   ├── internal_refs.py     Cross-file unresolved internal imports/attrs
 │   ├── unused_deps.py       Unused declared dependencies
 │   ├── doc_examples.py      Broken Markdown code-block syntax check
@@ -180,8 +181,24 @@ intraprocedural" rationale, which carries over unchanged). Both reuse the
 same rule symbols (`weak-hash`, `shell-true`, `sql-injection-risk`,
 `dangerous-eval`, `tainted-data-flow`) the Python checks emit, so
 `codequality compliance` and scoring treat JS/TS findings identically with
-no registry changes. No other tree-sitter language (Go, Java, Rust, ...)
-gets this treatment yet.
+no registry changes.
+
+Go gets the same treatment via `codequality/analyzers/go_security.py`
+(`weak-hash` for `crypto/md5`/`crypto/sha1`'s `New`/`Sum`; `shell-true`
+for `exec.Command`/`exec.CommandContext` invoked with a shell binary as
+one of its string-literal arguments -- Go has no `shell=True`-style flag,
+naming the shell *is* the risk signal; `sql-injection-risk` for
+`Query`/`Exec`/...`Context` variants whose query-text argument is built
+with `fmt.Sprintf`/`+` rather than passed as a literal with separate bind
+parameters -- no `dangerous-eval` equivalent, Go has no idiomatic
+string-to-code execution path) and
+`codequality/analyzers/go_taint_flow.py` (intraprocedural-only, sources
+being `.FormValue`/`.PostFormValue`/`.Header.Get`/`.URL.Query().Get`
+*calls* -- Go's net/http exposes request data via methods, not member
+access like JS's `req.query` -- plus `os.Getenv(...)` and `os.Args[...]`).
+Same rule-symbol reuse, same scoring/compliance integration, no registry
+changes. No other tree-sitter language (Java, Rust, ...) gets this
+treatment yet.
 
 ### Generic heuristic fallback
 
@@ -203,7 +220,7 @@ passes that need the whole repo at once:
 |---|---|---|
 | Duplication | `analyzers/duplication.py` | 6-line sliding-window SHA-256 hash; cross-file duplicate blocks |
 | Circular imports | `analyzers/circular_imports.py` | Directed import graph; SCC detection |
-| Dead code | `analyzers/dead_code.py` | Public top-level names never referenced anywhere else |
+| Dead code | `analyzers/dead_code_ast.py` | Public top-level names (AST refs) and public methods never referenced anywhere else |
 | Internal refs | `analyzers/internal_refs.py` | `from mod import name` where `mod` exists but has no `name` |
 | Unused deps | `analyzers/unused_deps.py` | Packages in requirements files never imported |
 | Doc examples | `analyzers/doc_examples.py` | Fenced ` ```python ` blocks in Markdown that fail `ast.parse` |
@@ -245,7 +262,16 @@ code — so large files and small files compete on equal terms.
 **`build_summary()`** — assembles a language-agnostic dict from the list of
 `FileMetrics` and the `ScoreResult`. This dict is the single intermediate
 representation consumed by all renderers, and what `scan --format json`
-serialises directly.
+serialises directly. Its `patch_coverage` key (diff mode + `--check-coverage`
+only) is a distinct summary of *which changed lines* tests don't reach —
+`{ratio, covered_lines, total_lines, uncovered: [{file, lines}]}` — built
+from `FileMetrics.coverage_covered_lines`/`coverage_uncovered_lines` (the
+changed-line subset of `coverage.py`'s covered/missing sets, stashed by
+`scanner._apply_coverage`). This is separate from `coverage_ratio`, which
+folds into the Coverage category's single 0-100 score and never lists
+individual lines; `patch_coverage` is the Codecov/Coveralls-style per-PR
+gate — `text`/`markdown`/`html` render it as a `file:44-51`-style range
+listing.
 
 **`render_*(summary)`** — one function per output format:
 
@@ -285,7 +311,7 @@ penalties.
 
 ## Fixer
 
-`fixer.py` implements the five rules with a single, unambiguous correct
+`fixer.py` implements eight rules with a single, unambiguous correct
 rewrite:
 
 | Rule | Transform |
@@ -295,11 +321,15 @@ rewrite:
 | `comparison-to-none` | `== None` → `is None`, `!= None` → `is not None` |
 | `comparison-to-true` | `x == True` → `x`, `x == False` → `not x`, etc. (simple names/attributes only) |
 | `redundant-else` | Remove the `else:` line and dedent its body by one level |
+| `bare-except` | `except:` → `except Exception:` |
+| `tab-indent` | Expand tabs found in a line's *leading* whitespace to 4 spaces (tabs elsewhere on the line are left alone) |
+| `unused-import` | Delete a top-level (zero-indent), single-name `import`/`from ... import` statement |
 
 The engine processes issues bottom-to-top within each file so that the
-`redundant-else` line removal doesn't shift the line numbers of earlier
-issues. Files are read and written with `newline=""` to preserve CRLF
-endings. `--dry-run` produces a unified diff without writing any files.
+`redundant-else`/`unused-import` line removals don't shift the line
+numbers of earlier issues. Files are read and written with `newline=""`
+to preserve CRLF endings. `--dry-run` produces a unified diff without
+writing any files.
 
 ---
 

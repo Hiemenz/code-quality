@@ -65,6 +65,12 @@ class FileMetrics:
     duplicate_lines: int = 0
     suppressed_count: int = 0
     coverage_ratio: float = None  # 0.0-1.0, or None if coverage wasn't measured for this file
+    # Diff mode only: the changed-line subset of coverage.py's covered/missing
+    # sets, i.e. "patch coverage" -- which specific changed lines are/aren't
+    # exercised by tests. Empty in scan mode (whole-file coverage has no
+    # single "changed lines" subset to report).
+    coverage_covered_lines: frozenset = field(default_factory=frozenset)
+    coverage_uncovered_lines: frozenset = field(default_factory=frozenset)
     parse_error: str = None
 
 

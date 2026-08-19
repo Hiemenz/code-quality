@@ -270,7 +270,7 @@ codequality ai-report . --check-imports --check-types
 # is the baseline, report-only (see "Repo conventions" below)
 codequality conventions .
 
-# Auto-fix the five deterministic style rules in-place (or preview with --dry-run)
+# Auto-fix the eight deterministic style/correctness rules in-place (or preview with --dry-run)
 codequality fix . --dry-run
 
 # Scaffold a .codequality.toml and GitHub Actions CI workflow into the repo
@@ -367,7 +367,8 @@ deliberately separate from everything else — see
 
 Five subcommands added in recent versions:
 `codequality fix` (auto-fix trailing-whitespace, f-string-no-placeholder,
-comparison-to-none/true, and redundant-else in-place — supports `--dry-run`),
+comparison-to-none/true, redundant-else, bare-except, tab-indent, and
+single-name unused-import in-place — supports `--dry-run`),
 `codequality init` (scaffold `.codequality.toml` and a GitHub Actions CI
 workflow with a single command),
 `codequality compare` (delta between two `scan --format json` reports;
@@ -630,28 +631,36 @@ The `unused-import`/`unused-variable` checks above only ever look at one
 file at a time. `scan` (full repo only — there's no "rest of the repo" to
 check against in `diff` mode, same reasoning as duplication below) also
 runs a whole-project version of that idea: a public top-level function or
-class, defined in one file, whose name never occurs — as a whole word,
-anywhere, excluding its own definition line — in any other scanned file's
-source, is flagged as **`dead-code`**.
+class, defined in one file, that's never referenced — as an AST `Name` or
+`Attribute` load, anywhere — in any other scanned file, is flagged as
+**`dead-code`**; a public class method that's never referenced as an
+attribute access (`obj.method(...)`) anywhere in the repo is flagged as
+**`unused-method`**.
 
-This is intentionally a blunt, text-level check (no import/scope
-resolution, same "no cleverness, just reproducibility" tradeoff every
-other analyzer here makes), so it's reported at `info` severity under the
-Structure category without affecting that category's score — a heuristic
-signal to look at, not something that should fail a build on its own.
-False positives are expected (e.g. a name only ever reached via
-`getattr`/reflection); the checks below rule out the common, obvious
-ones:
+References come from real AST nodes rather than a whole-word text search,
+so a name that merely appears inside a comment or string literal no
+longer counts as "used" — but this is still a heuristic, not full
+scope/type resolution (no cleverness, just reproducibility, same
+tradeoff every other analyzer here makes), so both rules are reported at
+`info` severity under the Correctness category without affecting that
+category's score — a signal to look at, not something that should fail a
+build on its own. False positives are expected (e.g. a name only ever
+reached via `getattr`/reflection); the checks below rule out the common,
+obvious ones:
 
 - names in a module's `__all__`;
 - dunder methods, and the conventional `main()` script entry point;
 - pytest/unittest hooks discovered by name/convention rather than direct
   reference: `test_*` functions, `setUp`/`tearDown` (and the `Class`/
   `Module` variants), and `Test*`-prefixed classes;
+- HTTP-verb method names (`get`, `post`, `put`, `patch`, `delete`, `head`,
+  `options`) — dispatched by web frameworks, never by direct call;
 - anything decorated — a decorator often means external dispatch (a
-  Flask route, a plugin registry, a CLI command) that a text search can't
-  see, so decorated functions/classes are skipped entirely rather than
-  guessed at.
+  Flask route, a plugin registry, a CLI command) that static analysis
+  can't see, so decorated functions/classes/methods are skipped entirely
+  rather than guessed at;
+- methods on a class that's itself already flagged `dead-code` — avoids
+  cascading noise from a class nobody instantiates.
 
 This check alone can't tell a `dead-code` finding that's brand new (maybe
 just not wired up yet) from one that's sat unused for years -- see
@@ -718,7 +727,18 @@ shaped query building, and taint tracking into SQL sinks from
 `req.query`/`req.params`/`req.body`/`req.headers`/`req.cookies`/
 `process.env`/`process.argv` — the same rule symbols and CWE/OWASP tags
 the Python checks use, so `codequality compliance` treats JS/TS findings
-identically. No other tree-sitter language gets this yet.
+identically.
+
+**Go gets the same treatment**: weak hashes (`crypto/md5`/`crypto/sha1`'s
+`New`/`Sum`), shell injection (`exec.Command`/`exec.CommandContext`
+invoked with a shell binary — `sh`, `bash`, `cmd`, `powershell`, ... — as
+one of its arguments), SQL-injection-shaped query building
+(`Query`/`Exec`/`QueryRow`/...`Context` built with `fmt.Sprintf`/`+`
+instead of a parameterized placeholder), and taint tracking into SQL
+sinks from `.FormValue(...)`/`.PostFormValue(...)`/`.Header.Get(...)`/
+`.URL.Query().Get(...)`/`os.Getenv(...)`/`os.Args[...]`. No
+`dangerous-eval` equivalent — Go has no idiomatic way to compile and run
+a string as code. No other tree-sitter language gets this yet.
 
 ### Diff mode is scoped to the actual change, not just the changed files
 
@@ -879,7 +899,26 @@ in this tool never executes the code it's scoring. `--test-command` takes
 the args you'd normally pass after `python -m` (default:
 `"unittest discover -s tests"`); override it for `pytest`, `nose2`,
 whatever the repo actually uses. In `diff` mode, the ratio measures just
-the lines that changed ("patch coverage"), not the whole file.
+the lines that changed ("patch coverage"), not the whole file, and folds
+into the Coverage category score exactly like whole-file coverage does in
+`scan` mode.
+
+`diff` additionally surfaces patch coverage as its own report section
+(not just baked into the category score), so a reviewer sees it directly
+rather than reverse-engineering it from a single 0-100 number:
+
+```
+Patch coverage: 25.0% (1/4 changed lines covered)
+Uncovered changed lines:
+  lib.py:6-8
+```
+
+Every format carries it: `--format json` adds a top-level `patch_coverage`
+object (`ratio`, `covered_lines`, `total_lines`, and an `uncovered` list of
+`{file, lines}`) whenever `diff --check-coverage` measured anything;
+`markdown`/`html` render the same collapsed-range listing for a PR
+comment. It's `null`/absent in `scan` mode (no single "changed lines" set
+to report against) and when nothing was measured.
 
 ## Further reading
 
@@ -1078,3 +1117,12 @@ python3 -m unittest discover -s tests
 
 The tool dogfoods itself — `codequality scan .` on this repo is part of
 sanity-checking any change to the analyzers or scorer.
+
+`scripts/scan_repos.py` runs the scanner across a set of external repos
+(GitHub slugs or local paths) and renders a comparison report showing which
+rules fire and how often — useful for sanity-checking a new/changed rule's
+false-positive rate against real-world code before merging it:
+
+```bash
+python3 scripts/scan_repos.py --repos psf/black pallets/flask --output comparison.html
+```

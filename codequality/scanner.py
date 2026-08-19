@@ -8,7 +8,7 @@ import os
 
 from codequality import coverage_check, generated_code, git_utils, suppress, typecheck
 from codequality.analyzers import (
-    circular_imports, complexity_regression, dead_code, doc_examples, duplication, generic_analyzer, internal_refs,
+    circular_imports, complexity_regression, dead_code_ast, doc_examples, duplication, generic_analyzer, internal_refs,
     python_analyzer, scope_check, signature_diff, treesitter_analyzer, unused_deps,
 )
 from codequality.analyzers.base import FileMetrics, Issue
@@ -153,13 +153,19 @@ def _apply_circular_imports(root, metrics_by_path):
 
 def _apply_dead_code(root, metrics_by_path):
     """Cross-file dead-code detection: needs every Python file's source at
-    once to know whether a top-level function/class is referenced
-    *anywhere* in the repo, so -- like duplication -- this only makes
-    sense on a full scan, never a diff (a diff has no view of the rest of
-    the repo to check references against).
+    once to know whether a top-level function/class (or public method) is
+    referenced *anywhere* in the repo, so -- like duplication -- this only
+    makes sense on a full scan, never a diff (a diff has no view of the
+    rest of the repo to check references against).
+
+    Uses the AST-based scanner (`dead_code_ast.py`), which collects
+    references from actual `Name`/`Attribute` load nodes instead of a
+    whole-word regex, so string/comment mentions of a name no longer
+    suppress a real finding. It also covers public class methods via the
+    `unused-method` rule, not just top-level functions/classes.
     """
     file_sources = _python_file_sources(root, metrics_by_path)
-    for rel_path, issues in dead_code.find_dead_code(file_sources).items():
+    for rel_path, issues in dead_code_ast.find_dead_code_ast(file_sources).items():
         fm = metrics_by_path.get(rel_path)
         if fm is not None:
             fm.issues.extend(issues)
@@ -273,7 +279,10 @@ def _apply_coverage(root, config, metrics_by_path, changed_files=None):
     per-file ratio to each matching FileMetrics -- this executes the
     target repo's code, unlike every other check here, which is why it's
     opt-in (--check-coverage). In diff mode, the ratio is "patch coverage"
-    (just the added lines), not whole-file coverage.
+    (just the added lines), not whole-file coverage; the changed-line
+    covered/uncovered sets are also stashed on the FileMetrics so the
+    report layer can list exactly which changed lines tests don't reach
+    (see report.py's patch_coverage summary block).
     """
     if not config.check_coverage or not coverage_check.AVAILABLE:
         return
@@ -288,6 +297,9 @@ def _apply_coverage(root, config, metrics_by_path, changed_files=None):
         computed = coverage_check.ratio(lines, only_lines)
         if computed is not None:
             fm.coverage_ratio = computed
+        if only_lines is not None:
+            fm.coverage_covered_lines = frozenset(lines["covered"] & only_lines)
+            fm.coverage_uncovered_lines = frozenset(lines["missing"] & only_lines)
 
 
 def _apply_signature_diff(root, metrics_by_path, base):

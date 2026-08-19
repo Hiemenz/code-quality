@@ -8,6 +8,35 @@ project follows semantic versioning.
 
 ### Added
 
+- Go gets the same real security detection JavaScript/TypeScript has
+  (with the `treesitter` extra installed): `weak-hash` for
+  `crypto/md5`/`crypto/sha1`, `shell-true` for `exec.Command`/
+  `exec.CommandContext` invoked with a shell binary, `sql-injection-risk`
+  for `Query`/`Exec`/...`Context` calls built with `fmt.Sprintf`/`+`, and
+  intraprocedural taint tracking into SQL sinks from `.FormValue`/
+  `.PostFormValue`/`.Header.Get`/`.URL.Query().Get`/`os.Getenv`/
+  `os.Args`. Same rule symbols/CWE tags as the Python and JS/TS checks,
+  so `codequality compliance` and scoring need no registry changes
+  (`codequality/analyzers/go_security.py`, `go_taint_flow.py`).
+- `diff --check-coverage` now surfaces patch coverage as its own report
+  section instead of only folding it into the Coverage category's 0-100
+  score: a `Patch coverage: X% (N/M changed lines covered)` line plus a
+  `file:44-51`-style listing of which changed lines the test suite
+  doesn't reach, in `text`/`markdown`/`html`, and a `patch_coverage`
+  object (`ratio`, `covered_lines`, `total_lines`, `uncovered`) in
+  `--format json`.
+- `codequality fix` gains three more auto-fixable rules: `bare-except`
+  (`except:` → `except Exception:`), `tab-indent` (expand leading tabs to
+  4 spaces), and `unused-import` (delete a top-level, single-name import
+  statement) — eight rules total, up from five.
+- Cross-file dead-code detection now runs on AST references instead of a
+  whole-word regex (`analyzers/dead_code_ast.py`), so a name that merely
+  appears inside a comment or string literal no longer suppresses a real
+  finding. It also adds `unused-method`: a public class method never
+  referenced as an attribute access anywhere in the repo.
+- `scripts/scan_repos.py` — scan a set of external repos and render a
+  cross-repo rule hit-rate comparison, for sanity-checking a new rule's
+  false-positive rate against real-world code.
 - `codequality explain <rule>` — look up any rule symbol from the terminal
   (`--list` enumerates all rules).
 - `--format badge` on `scan`/`diff` — emits shields.io endpoint JSON so a

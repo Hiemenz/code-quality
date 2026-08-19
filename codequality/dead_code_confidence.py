@@ -1,24 +1,26 @@
 """Dead-code confidence: how old is each cross-file dead-code finding, and
 how safe is it to actually remove?
 
-`analyzers/dead_code.py` finds public top-level functions/classes that
-look unused (never referenced, as a whole word, anywhere else in the
-repo's scanned source) -- but it's a pure snapshot: it has no notion of
-*when* that code was last touched. A function that looks dead but was
+`analyzers/dead_code_ast.py` finds public top-level functions/classes and
+public class methods that look unused (never referenced anywhere else in
+the repo's scanned source) -- but it's a pure snapshot: it has no notion
+of *when* that code was last touched. A function that looks dead but was
 written yesterday might just be new/in-progress work nobody has wired up
 yet; one that's looked dead for two years is a much safer removal
 candidate. `dead-code-confidence` adds that missing time dimension, the
 same way `todo_age.py` added one to the `todo-marker` style check: for
-every dead-code finding `analyzers/dead_code.py` already produces, `git
-blame -w --line-porcelain HEAD` (same technique as `todo_age.py`/
-`edit_distance.py`) finds the commit that introduced the exact `def`/
-`class` line, and that commit's author date gives the finding an age.
+every dead-code/unused-method finding `analyzers/dead_code_ast.py`
+already produces, `git blame -w --line-porcelain HEAD` (same technique as
+`todo_age.py`/`edit_distance.py`) finds the commit that introduced the
+exact `def`/`class` line, and that commit's author date gives the finding
+an age.
 
 This is deliberately just the age dimension, nothing more -- it reuses
-`analyzers/dead_code.py`'s `find_dead_code` directly rather than
+`analyzers/dead_code_ast.py`'s `find_dead_code_ast` directly rather than
 re-deriving the detection (and its exemptions: `__all__`, dunders, test
-hooks, decorated definitions -- see that module's docstring), and never
-re-judges whether a finding is a true or false positive.
+hooks, decorated definitions, HTTP-verb methods -- see that module's
+docstring), and never re-judges whether a finding is a true or false
+positive.
 
 `confidence` is a plain 3-tier label off that single number -- one signal
 can't honestly support more precision than a coarse label, so this
@@ -40,16 +42,19 @@ import os
 import re
 from datetime import datetime, timezone
 
-from codequality.analyzers import dead_code
+from codequality.analyzers import dead_code_ast
 from codequality.git_utils import GitError, _run
 from codequality.scanner import scan_repo
 
 DEFAULT_STALE_DAYS = 180
 DEFAULT_MAX_LISTING = 25
 
-# Matches the fixed message shape find_dead_code() emits:
-# "Function 'foo' is defined but never referenced anywhere else in the repo"
-_NAME_RE = re.compile(r"^(?:Function|Class) '([^']+)' is defined")
+# Matches the fixed message shapes find_dead_code_ast() emits:
+# "Function 'foo' is never referenced in code"
+# "Class 'Foo' is never referenced in code"
+# "Method 'Foo.bar' is never referenced anywhere in the repo"
+_TOP_LEVEL_RE = re.compile(r"^(Function|Class) '([^']+)' is never referenced")
+_METHOD_RE = re.compile(r"^Method '([^']+)' is never referenced")
 _BLAME_HEADER_RE = re.compile(r"^([0-9a-f]{40}) \d+ \d+")
 
 
@@ -99,9 +104,19 @@ def _read_source(root, rel_path):
         return None
 
 
-def _extract_name(message):
-    m = _NAME_RE.match(message)
-    return m.group(1) if m else message
+def _extract_name_and_kind(issue):
+    """(name, kind) for an Issue from find_dead_code_ast(), where kind is
+    "function", "class", or "method". Falls back to (message, "function")
+    for a message shape neither regex recognises, so a future wording
+    change degrades gracefully instead of dropping the finding.
+    """
+    if issue.symbol == "unused-method":
+        m = _METHOD_RE.match(issue.message)
+        return (m.group(1) if m else issue.message), "method"
+    m = _TOP_LEVEL_RE.match(issue.message)
+    if m:
+        return m.group(2), m.group(1).lower()
+    return issue.message, "function"
 
 
 def _confidence(age_days, stale_days):
@@ -114,14 +129,15 @@ def _confidence(age_days, stale_days):
 
 def compute(root, config, stale_days=DEFAULT_STALE_DAYS):
     """Run a full scan to get every Python file's source, feed it straight
-    into `analyzers.dead_code.find_dead_code` (detection logic untouched),
-    then age each finding via `git blame`.
+    into `analyzers.dead_code_ast.find_dead_code_ast` (detection logic
+    untouched), then age each finding via `git blame`.
 
     Returns a list of
-        {"file", "line", "name", "age_days", "commit_date", "confidence"}
-    sorted by age_days descending. A finding whose introducing line can't
-    be blamed (untracked file, no git history yet) contributes nothing --
-    same "no age to report" convention as todo_age.py.
+        {"file", "line", "name", "kind", "age_days", "commit_date", "confidence"}
+    sorted by age_days descending. `kind` is "function", "class", or
+    "method". A finding whose introducing line can't be blamed (untracked
+    file, no git history yet) contributes nothing -- same "no age to
+    report" convention as todo_age.py.
     """
     file_metrics = scan_repo(root, config)
     file_sources = {}
@@ -132,7 +148,7 @@ def compute(root, config, stale_days=DEFAULT_STALE_DAYS):
         if source is not None:
             file_sources[fm.path] = source
 
-    issues_by_path = dead_code.find_dead_code(file_sources)
+    issues_by_path = dead_code_ast.find_dead_code_ast(file_sources)
 
     now = datetime.now(timezone.utc)
     date_cache = {}
@@ -147,10 +163,12 @@ def compute(root, config, stale_days=DEFAULT_STALE_DAYS):
             if commit_date is None:
                 continue
             age_days = (now - commit_date).days
+            name, kind = _extract_name_and_kind(issue)
             results.append({
                 "file": rel_path,
                 "line": issue.line,
-                "name": _extract_name(issue.message),
+                "name": name,
+                "kind": kind,
                 "age_days": age_days,
                 "commit_date": commit_date.isoformat(),
                 "confidence": _confidence(age_days, stale_days),
@@ -171,10 +189,11 @@ def render_text(results, stale_days=DEFAULT_STALE_DAYS, max_listing=DEFAULT_MAX_
         lines.append("  (no dead-code findings)")
         return "\n".join(lines)
 
-    lines.append(f"  {'File:Line':<50}{'Name':<30}{'Age':>8}{'Confidence':>12}")
+    lines.append(f"  {'File:Line':<50}{'Name':<38}{'Age':>8}{'Confidence':>12}")
     for r in results[:max_listing]:
         loc = f"{r['file']}:{r['line']}"
-        lines.append(f"  {loc:<50}{r['name']:<30}{str(r['age_days']) + 'd':>8}{r['confidence']:>12}")
+        label = f"{r['name']} [{r['kind']}]" if r["kind"] == "method" else r["name"]
+        lines.append(f"  {loc:<50}{label:<38}{str(r['age_days']) + 'd':>8}{r['confidence']:>12}")
     remaining = len(results) - min(len(results), max_listing)
     if remaining > 0:
         lines.append(f"  ... and {remaining} more (see --format json for the full list)")

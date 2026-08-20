@@ -88,6 +88,16 @@ def _add_scan_diff_subparsers(sub):
         "--record-history", metavar="FILE",
         help="Append this run's overall/category scores as a JSON line to FILE"
     )
+    scan_p.add_argument(
+        "--stdin", action="store_true",
+        help="Read code from stdin instead of scanning a directory. "
+             "The path argument (default: .) is still used for config-file discovery.",
+    )
+    scan_p.add_argument(
+        "--filename", default=None, metavar="NAME",
+        help="Filename to give the stdin snippet (controls language detection; default: snippet.py). "
+             "Only meaningful with --stdin.",
+    )
 
     diff_p = sub.add_parser("diff", help="Score only the code changed relative to a git base")
     _add_common_args(diff_p)
@@ -1014,8 +1024,43 @@ def _emit(text, output_path):
         print(text)
 
 
+def _cmd_scan_stdin(args):
+    """Scan a single code snippet read from stdin."""
+    import tempfile
+
+    filename = os.path.basename(args.filename or "snippet.py")
+    code = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+
+    with tempfile.TemporaryDirectory(prefix="cq-stdin-") as tmpdir:
+        dest = os.path.join(tmpdir, filename)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        config_root = os.path.abspath(args.path)
+        config = _load_config(args, config_root)
+        fail_under = args.fail_under if args.fail_under is not None else config.fail_under
+
+        file_metrics = scan_repo(tmpdir, config, jobs=args.jobs)
+        if args.baseline:
+            baseline_mod.apply(file_metrics, baseline_mod.load(args.baseline))
+        score_result = compute_scores(file_metrics, config)
+        summary = build_summary(
+            file_metrics, score_result, "scan", tmpdir,
+            fail_under=fail_under, fail_on=args.fail_on,
+        )
+
+        if args.record_history:
+            append_entry(args.record_history, summary)
+
+        _emit(_render(summary, args.format), args.output)
+        return 0 if summary["threshold"]["passed"] else 1
+
+
 def cmd_scan(args):
     """Handle `codequality scan`: full-repo scan, returns the process exit code."""
+    if getattr(args, "stdin", False):
+        return _cmd_scan_stdin(args)
+
     root = os.path.abspath(args.path)
     config = _load_config(args, root)
     fail_under = args.fail_under if args.fail_under is not None else config.fail_under

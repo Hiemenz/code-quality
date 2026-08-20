@@ -1,4 +1,19 @@
-"""Cross-file dead-code detection: a top-level function or class defined
+"""Cross-file dead-code detection (regex-based) and shared exemption helpers.
+
+This module serves two roles:
+
+1. **Standalone detector** — `find_dead_code()` is the original regex-based
+   cross-file dead-code check.  It is no longer used by `scanner.py` (which
+   switched to the AST-based `dead_code_ast.find_dead_code_ast()` for higher
+   precision), but it remains available as a lightweight alternative for
+   contexts where tree parsing is undesirable.
+
+2. **Shared helper module** — the exemption constants and predicates
+   (`_TEST_HOOKS`, `_DEF_TYPES`, `_is_dunder`, `_is_exempt_name`,
+   `_dunder_all_names`) are imported by `dead_code_ast.py` rather than
+   duplicated, so changes to the exemption rules only need to be made here.
+
+Cross-file dead-code detection: a top-level function or class defined
 in one file but never referenced anywhere else in the repo.
 
 The existing per-file unused-import/unused-variable checks (see

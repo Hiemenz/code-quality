@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 
 from codequality.cli import main
@@ -165,6 +166,28 @@ class TestCliIntegration(unittest.TestCase):
             del data["generated_at"]
             outputs.add(json.dumps(data, sort_keys=True))
         self.assertEqual(len(outputs), 1)
+
+    def test_scan_stdin_clean_snippet(self):
+        """--stdin with a clean snippet exits 0 and reports one file analyzed."""
+        code = "def add(a, b):\n    return a + b\n"
+        buf = io.StringIO()
+        with unittest.mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(code.encode()))):
+            with redirect_stdout(buf):
+                exit_code = main(["scan", "--stdin", "--filename", "add.py", "--format", "json"])
+        data = json.loads(buf.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(data["summary"]["files_analyzed"], 1)
+
+    def test_scan_stdin_flags_known_issue(self):
+        """--stdin detects a real rule violation (unused-import)."""
+        code = "import os\n\nx = 1\n"
+        buf = io.StringIO()
+        with unittest.mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(code.encode()))):
+            with redirect_stdout(buf):
+                main(["scan", "--stdin", "--filename", "snippet.py", "--format", "json"])
+        data = json.loads(buf.getvalue())
+        symbols = {i["symbol"] for i in data["issues"]}
+        self.assertIn("unused-import", symbols)
 
 
 if __name__ == "__main__":

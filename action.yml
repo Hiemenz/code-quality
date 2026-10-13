@@ -26,7 +26,7 @@ inputs:
     default: "true"
   extras:
     description: >-
-      Optional pip extras to install, e.g. "treesitter" or
+      Optional package extras to install, e.g. "treesitter" or
       "treesitter,types". Empty installs the core package only.
     required: false
     default: ""
@@ -34,13 +34,16 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+
     - name: Install codequality
       shell: bash
       run: |
         if [ -n "${{ inputs.extras }}" ]; then
-          pip install "${{ github.action_path }}[${{ inputs.extras }}]"
+          uv pip install --system "${{ github.action_path }}[${{ inputs.extras }}]"
         else
-          pip install "${{ github.action_path }}"
+          uv pip install --system "${{ github.action_path }}"
         fi
 
     - name: Full repo scan

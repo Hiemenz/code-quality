@@ -60,7 +60,7 @@ That leads to a few deliberate choices:
 ## Install
 
 ```bash
-pip install .
+uv pip install .
 ```
 
 Or run it with zero install, straight from a checkout:
@@ -75,16 +75,16 @@ python3 -m codequality scan .
 whatever repo you want scored:
 
 ```bash
-pip install "git+https://github.com/Hiemenz/code-quality.git"
+uv tool install "git+https://github.com/Hiemenz/code-quality.git"
 
 # for real per-function parsing of JS/TS/Go/Java/C/C++/C#/Ruby/PHP/Rust/
 # Kotlin/Swift/Scala instead of the heuristic fallback (see "Language
 # support" below):
-pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[treesitter]"
+uv tool install "codequality[treesitter] @ git+https://github.com/Hiemenz/code-quality.git"
 
 # other optional extras, each backing one opt-in check -- see
 # "Correctness checks", "Test coverage", and "Mutation testing" below:
-pip install "git+https://github.com/Hiemenz/code-quality.git#egg=codequality[types,coverage,mutation]"
+uv tool install "codequality[types,coverage,mutation] @ git+https://github.com/Hiemenz/code-quality.git"
 ```
 
 Then, in the target repo:
@@ -704,7 +704,7 @@ nesting, via `ast` — no extra install required.
 `tree-sitter` extra is installed:
 
 ```bash
-pip install "codequality[treesitter]"
+uv pip install "codequality[treesitter]"
 ```
 
 This adds real function/method boundaries, real cyclomatic complexity, and
@@ -878,7 +878,7 @@ instance. Names the file re-binds or monkeypatches are skipped — see
 import check, results depend on the running interpreter's version — the
 message says which Python it checked against.
 
-`--check-types` runs `mypy` (`pip install codequality[types]`) over the
+`--check-types` runs `mypy` (`uv pip install codequality[types]`) over the
 whole repo and folds its errors into the correctness category. Like
 `--check-imports`, results depend on the type hints actually being present
 and on dependencies being resolvable — same environment caveat applies.
@@ -891,7 +891,7 @@ codequality scan . --check-coverage --test-command "pytest -q"
 codequality diff . --check-coverage   # "patch coverage": just the changed lines
 ```
 
-Requires `pip install codequality[coverage]`. Untested code is the
+Requires `uv pip install codequality[coverage]`. Untested code is the
 single strongest signal that a change — LLM-written or not — hasn't been
 verified to do anything in particular; did the LLM write tests, and do
 they cover the lines it just changed? This is the one check in

@@ -39,6 +39,9 @@ mutation = ["mutmut>=3.0"]
 [project.scripts]
 codequality = "codequality.cli:main"
 
+[dependency-groups]
+dev = ["pytest"]
+
 [tool.setuptools]
 packages = ["codequality", "codequality.analyzers"]
 

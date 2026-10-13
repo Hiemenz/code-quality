@@ -1174,7 +1174,7 @@ def cmd_mutation(args):
     """
     root = os.path.abspath(args.path)
     if not mutation.AVAILABLE:
-        print("error: mutmut is not installed (pip install codequality[mutation])", file=sys.stderr)
+        print("error: mutmut is not installed (uv pip install codequality[mutation])", file=sys.stderr)
         return 2
     if not mutation.is_configured(root):
         print(mutation.SETUP_HINT, file=sys.stderr)

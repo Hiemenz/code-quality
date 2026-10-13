@@ -3,7 +3,7 @@ than shelling out -- this way it runs in the exact same environment/venv
 codequality itself is installed in, which matters because meaningful type
 checking requires the target repo's own dependencies to be importable.
 
-Optional (`pip install codequality[types]`) so the base install doesn't
+Optional (`uv pip install codequality[types]`) so the base install doesn't
 pull in mypy. Opt-in via --check-types for the same reason --check-imports
 is opt-in: the result depends on this environment and on type annotations
 existing at all, not on parsing the source alone -- see README.

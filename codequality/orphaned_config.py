@@ -31,7 +31,7 @@ checks: (1) the only structure this check actually needs out of a
 workflow file is "what shell commands appear under `run:` keys," which a
 few lines of indentation tracking answers directly, without needing a
 document tree; and (2) requiring PyYAML would either become a hard new
-dependency for a plain `pip install .` or force every caller through an
+dependency for a plain `uv pip install .` or force every caller through an
 `AVAILABLE` gate for what is, in the end, still just string extraction.
 The regex approach is intentionally conservative to compensate: only
 clear, unambiguous relative paths are ever flagged (a leading `./`/`../`,

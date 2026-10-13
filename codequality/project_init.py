@@ -63,8 +63,10 @@ jobs:
         with:
           python-version: "3.x"
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Install codequality
-        run: pip install codequality
+        run: uv pip install --system codequality
 
       # Full-repo scan (overall health — track over time via badges/history).
       - name: Full repo scan

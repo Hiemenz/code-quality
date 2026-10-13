@@ -206,7 +206,7 @@ code (flips a `<` to `<=`, deletes a line, ...) and reruns your tests
 against each mutant; a mutant that still passes is one your tests didn't
 actually check for. A low kill rate means the tests are theater.
 
-Requires `pip install codequality[mutation]` and a `[tool.mutmut]` section
+Requires `uv pip install codequality[mutation]` and a `[tool.mutmut]` section
 in the target repo's `pyproject.toml` (`codequality` never writes to that
 file on your behalf — run `codequality mutation` once and it'll print the
 minimal config to add if it's missing). This is always its own explicit
@@ -342,7 +342,7 @@ of it is an unresolved import or a real type error — the two checks this
 tool has that most directly catch LLM hallucination. Requires at least
 one of `--check-imports`/`--check-types` (that's what produces the
 findings being rolled up); `--check-types` additionally needs
-`pip install codequality[types]`.
+`uv pip install codequality[types]`.
 
 ## Ownership / bus factor
 
@@ -695,7 +695,7 @@ see `codequality/orphaned_config.py`'s module docstring for the full
 reasoning. In short: the only structure this check needs out of a
 workflow file is "what shell commands appear under `run:` keys," which a
 few lines of indentation tracking answers directly without a hard new
-PyYAML dependency for a plain `pip install .` (contrast this with
+PyYAML dependency for a plain `uv pip install .` (contrast this with
 `--check-types`/`--check-coverage`, which *do* gate a real optional
 dependency behind an `AVAILABLE` flag, because those checks need the real
 thing -- mypy's type inference, coverage.py's instrumentation -- not just

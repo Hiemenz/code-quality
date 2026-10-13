@@ -7,7 +7,7 @@ cyclomatic complexity and nesting depth from real AST node kinds -- the
 same idea as `python_analyzer`, just driven by a table of node-kind names
 per language instead of Python's `ast` module.
 
-`tree-sitter-language-pack` is an *optional* dependency (`pip install
+`tree-sitter-language-pack` is an *optional* dependency (`uv pip install
 codequality[treesitter]`) so the base install stays dependency-free, as
 documented in the README. When it isn't installed, `AVAILABLE` is False and
 `scanner.py` falls back to `generic_analyzer`.

@@ -4,7 +4,7 @@ in a subprocess -- there's no way to know whether code is covered without
 running something against it, so unlike every other check in this tool,
 this one executes the target repo's code.
 
-Optional (`pip install codequality[coverage]`) and opt-in (--check-coverage)
+Optional (`uv pip install codequality[coverage]`) and opt-in (--check-coverage)
 for exactly that reason, plus it depends on knowing how to run the repo's
 tests, which only the caller knows -- see --test-command in the README.
 """

@@ -5,7 +5,7 @@ catch a behavior change, which is exactly the failure mode of narrow,
 example-based tests that check "did it run" rather than "is the answer
 right" (a well-documented weak spot in LLM-written test suites).
 
-Optional (`pip install codequality[mutation]`) and always a separate,
+Optional (`uv pip install codequality[mutation]`) and always a separate,
 explicit command (`codequality mutation`), never folded into `scan` --
 mutmut reruns the target repo's test suite once per mutant, so even a
 modest codebase can take minutes. mutmut 3.x's configuration lives
